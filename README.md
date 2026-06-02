@@ -80,8 +80,9 @@ overdrawing.
 
 ## Usage
 
-Requires a `SEQUENCE_API_KEY` in the environment (a local `.env` works) and a Tokio
-toolchain. One binary, `maestro`, with subcommands:
+Requires the [Rust toolchain](https://rustup.rs) (`cargo`) and a `SEQUENCE_API_KEY`
+in the environment (a local `.env` works). Build with `cargo build --release` (the
+binary lands at `target/release/maestro`). One binary, `maestro`, with subcommands:
 
 ```bash
 maestro discover          # onboard once: detect pay cadence, income pool(s), typical amounts → maestro.json
