@@ -150,6 +150,36 @@ only difference from a real run — the computation is identical. `run` accounts
 and what it ignores — so nothing is silently dropped. (During development,
 `cargo run -- <command>`.)
 
+`maestro run` prints the whole plan — every pod accounted for:
+
+```
+MAESTRO — 2026-06-15  [DRY RUN — moves nothing]
+pay schedule: SemiMonthly { days: [15, -1] }   strategy: SoonestDue
+pool: Income Fund = $2500.00   buffer: 2.5%   phase: Shadow
+
+=== Auto ===
+  Car Payment            have   $500.00  target   $500.00  need     $0.00  fund     $0.00
+  Car Insurance          have    $60.00  target    $60.00  need     $0.00  fund     $0.00
+=== Housing ===
+  Rent                   have  $1000.00  target  $1000.00  need     $0.00  fund     $0.00
+  Electric               have    $50.00  target    $50.00  need     $0.00  fund     $0.00
+=== Memberships ===
+  Warehouse Club         have    $55.00  target    $50.00  need     $0.00  fund     $0.00  ahead $5.00
+=== Health ===
+  Dentist                have    $80.00  target   $150.00  need    $70.00  fund    $50.00  [drawdown — behind pace, no catch-up]
+=== (ungrouped) ===
+  Allowance              have   $100.00  target   $100.00  need     $0.00  fund     $0.00
+  Groceries              have     $0.00  target   $400.00  need   $400.00  fund   $400.00  [top-up — owes this pay]
+
+ahead of pace $5.00  ·  behind $0.00
+net $5.00 reclaimable → reclaim pod (run `maestro rebalance`)
+
+notes:
+    Dentist: $80 saved toward $600 by 2026-09-15 — ~$70 behind pace (top up to catch up, optional)
+
+ignored — not bills (3): Emergency Fund, Savings, Vacation
+```
+
 ### Daemon
 
 `maestro daemon` runs continuously (e.g. in a container). It watches your income
