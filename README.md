@@ -150,6 +150,25 @@ only difference from a real run — the computation is identical. `run` accounts
 and what it ignores — so nothing is silently dropped. (During development,
 `cargo run -- <command>`.)
 
+With your pods named like this (plus an `Income Fund` pool and a few non-bill pods —
+`Emergency Fund`, `Savings`, `Vacation`):
+
+```
+G: Auto
+G: Housing
+G: Memberships
+G: Health
+
+Auto / Car Payment / 500 / 15
+Auto / Car Insurance / 60 / 1
+Housing / Rent / 1000 / 1
+Housing / Electric / 50 / last
+Memberships / Warehouse Club / 60 / 10 / year
+Health / Dentist / 600 / drawdown / 2026-09-15 / 6mo
+Allowance / 200 / month
+Groceries / 400 / topup
+```
+
 `maestro run` prints the whole plan — every pod accounted for:
 
 ```
@@ -179,6 +198,10 @@ notes:
 
 ignored — not bills (3): Emergency Fund, Savings, Vacation
 ```
+
+Columns: `have` is the real balance, `target` is where the pod should be *by this date*
+(so it trails the full amount mid-cycle), `need` is the gap, and `fund` is what this
+cycle moves.
 
 ### Daemon
 
