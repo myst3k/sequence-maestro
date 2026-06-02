@@ -13,24 +13,46 @@ rule trees you'd otherwise maintain by hand.
 ## The idea
 
 Sequence lets you automate money with rules, but expressing a real budget means a
-fan-out of chained rules with hand-calculated amounts (`top up Housing to $1,890,
-Automotive to $900, …`) you keep in sync by hand. Add a bill and you're editing
+fan-out of chained rules with hand-calculated amounts (`top up Housing to $2,000,
+Auto to $500, …`) you keep in sync by hand. Add a bill and you're editing
 several rules and redoing arithmetic.
 
 maestro flips that: the **pod name is the spec**. Name a pod
 
 ```
-Auto / Car Payment / 450 / 28
+Auto / Car Payment / 500 / 15
 ```
 
-and the engine knows it's a $450 bill in the **Auto** group, due the 28th. It reads
+and the engine knows it's a $500 bill in the **Auto** group, due the 15th. It reads
 all your pods, builds the budget model from their names, reads live balances, and
 computes the funding plan — group totals, per-paycheck shares, due-date timing, all
 derived. Add a bill = name one pod. Nothing else to maintain.
 
 ## Naming
 
-The pod **name** is the source of truth — maestro parses it; there's no config file.
+The pod **name** is the spec — maestro parses it; there's no config file. Set it up in
+two steps: **create your group pods first, then name your bill pods.**
+
+### Group pods (create these first)
+
+A group is a single pod named `G: <Group>` — `G: Auto`, `G: Home`. It's the one control
+point for everything in that group: money flows `pool → group pod → bill pods`, and the
+group's total and per-paycheck pull are **derived** from its member bills (never typed).
+
+```
+G: Auto
+G: Home
+```
+
+Create the `G:` pod **before** the bills that name it. If a bill references a group that
+has no `G:` pod, maestro still funds the bill — but straight from the pool, and `run`
+warns you (`no group pod for 'Auto' — funding its bills from the pool`), so you lose that
+group's single control point. Groups are optional: a 3-field bill with no group is funded
+directly from the pool.
+
+### Bill pods
+
+Each bill is a pod whose name follows this grammar:
 
 ```
 [Group /] Name / Amount / DueDay [/ Frequency]      # due on a day of the month
@@ -40,7 +62,7 @@ The pod **name** is the source of truth — maestro parses it; there's no config
 
 | Field | Meaning |
 |---|---|
-| `Group` | *(optional)* the bill's group; resolves to the group pod `G: <Group>`. Omit it (3 fields) for a standalone bill funded straight from the pool. |
+| `Group` | *(optional)* the bill's group — must match a `G: <Group>` pod (above). Omit it (3 fields) for a standalone bill funded straight from the pool. |
 | `Name` | the bill's name — an inner `/` must have **no** surrounding spaces |
 | `Amount` | dollars: `600` or `134.50`, no `$` |
 | `DueDay` | `1`–`31`, or `last` for end of month |
@@ -48,19 +70,18 @@ The pod **name** is the source of truth — maestro parses it; there's no config
 
 The delimiter is `" / "` (space-slash-space), so a name like `Water/Trash` stays one field.
 
-- **Group pods** are named `G: Auto`, `G: Home`. Money flows `pool → group pod → bill pods`; the group's total and per-paycheck pull are **derived** from its member bills, never typed.
 - **`topup`** tops the pod up to `Amount` each paycheck, measured from the ledger (deposits since the last payday) — for pods that get spent down, so it won't refill spending or double-fund.
-- **`drawdown`** (`Health / Dentist / 600 / drawdown / 2026-08-26 / 6mo`) saves a flat slice each paycheck toward a dated lump, then rolls the date forward by the period (`mo` / `y`).
+- **`drawdown`** (`Health / Dentist / 600 / drawdown / 2026-09-15 / 6mo`) saves a flat slice each paycheck toward a dated lump, then rolls the date forward by the period (`mo` / `y`).
 - Pods that don't match the grammar — savings, debt-routing, the income pool — are **ignored** by the funding logic.
 
 A few worked examples — the comment after each shows how the name decodes:
 
 ```
-Auto / Car Payment / 450 / 15                  # $450 due the 15th, in the "Auto" group
-Housing / Rent / 1500 / 1                      # $1,500 due the 1st, in "Housing"
-Memberships / Warehouse Club / 120 / 10 / year # $120 once a year, due the 10th, in "Memberships"
-Utilities / Electric / 90 / last               # $90 due the last day of the month, in "Utilities"
-Allowance / 1000 / month                       # $1,000/month — no group (funded from the pool), no due day (spread evenly)
+Auto / Car Payment / 500 / 15                  # $500 due the 15th, in the "Auto" group
+Housing / Rent / 2000 / 1                      # $2,000 due the 1st, in "Housing"
+Memberships / Warehouse Club / 60 / 10 / year  # $60 once a year, due the 10th, in "Memberships"
+Utilities / Electric / 100 / last              # $100 due the last day of the month, in "Utilities"
+Allowance / 200 / month                        # $200/month — no group (funded from the pool), no due day (spread evenly)
 ```
 
 ## How funding works
