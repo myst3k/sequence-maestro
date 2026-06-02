@@ -53,12 +53,14 @@ The delimiter is `" / "` (space-slash-space), so a name like `Water/Trash` stays
 - **`drawdown`** (`Health / Dentist / 600 / drawdown / 2026-08-26 / 6mo`) saves a flat slice each paycheck toward a dated lump, then rolls the date forward by the period (`mo` / `y`).
 - Pods that don't match the grammar — savings, debt-routing, the income pool — are **ignored** by the funding logic.
 
+A few worked examples — the comment after each shows how the name decodes:
+
 ```
-Auto / Car Payment / 450 / 15
-Housing / Rent / 1500 / 1
-Memberships / Warehouse Club / 120 / 10 / year
-Utilities / Electric / 90 / last
-Allowance / 1000 / month
+Auto / Car Payment / 450 / 15                  # $450 due the 15th, in the "Auto" group
+Housing / Rent / 1500 / 1                      # $1,500 due the 1st, in "Housing"
+Memberships / Warehouse Club / 120 / 10 / year # $120 once a year, due the 10th, in "Memberships"
+Utilities / Electric / 90 / last               # $90 due the last day of the month, in "Utilities"
+Allowance / 1000 / month                       # $1,000/month — no group (funded from the pool), no due day (spread evenly)
 ```
 
 ## How funding works
