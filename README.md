@@ -28,6 +28,20 @@ all your pods, builds the budget model from their names, reads live balances, an
 computes the funding plan — group totals, per-paycheck shares, due-date timing, all
 derived. Add a bill = name one pod. Nothing else to maintain.
 
+Once your pods are named, money flows pool → group pods → bills:
+
+```mermaid
+flowchart TD
+    inc(["paycheck"]) --> pool["Income Fund (the pool)"]
+    pool --> ga["G: Auto"]
+    pool --> gh["G: Housing"]
+    pool -->|"standalone"| allow["Allowance"]
+    ga --> car["Auto / Car Payment"]
+    ga --> ins["Auto / Car Insurance"]
+    gh --> rent["Housing / Rent"]
+    gh --> elec["Housing / Electric"]
+```
+
 ## Naming
 
 The pod **name** is the spec — maestro parses it; there's no config file. Set it up in
@@ -98,6 +112,18 @@ it in time. Other frequencies spread the funding over the right number of payche
 Money flows `pool → group → bills`, with group totals computed from their member
 bills. On a short paycheck it rations what's there — soonest-due first — instead of
 overdrawing.
+
+End to end, each cycle:
+
+```mermaid
+flowchart LR
+    dep(["new deposit"]) --> read["read live pods + balances"]
+    read --> asm["assemble budget from pod names"]
+    asm --> plan["compute plan: need = target - balance"]
+    plan --> dry{"dry run?"}
+    dry -->|"yes (default)"| rep["report the plan, move nothing"]
+    dry -->|"--execute"| mv["move money: pool → group → bills"]
+```
 
 ## Usage
 
