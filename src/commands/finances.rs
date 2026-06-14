@@ -22,8 +22,7 @@ pub async fn run(cfg: &Config) -> Result<(), Box<dyn std::error::Error + Send + 
 
     // Fetch all account details concurrently (serial was ~30s over ~50 pods).
     let cref = &client;
-    let details =
-        futures::future::join_all(page.items.iter().map(|s| cref.account(&s.id))).await;
+    let details = futures::future::join_all(page.items.iter().map(|s| cref.account(&s.id))).await;
 
     println!("===== ACCOUNTS =====");
     for (s, acct_res) in page.items.iter().zip(details) {

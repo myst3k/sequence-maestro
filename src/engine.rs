@@ -167,9 +167,9 @@ pub fn render(report: &Report) -> String {
         let tail = match line.kind {
             LineKind::Topup if line.need > 0 => "  [top-up — owes this pay]".cyan().to_string(),
             LineKind::Topup => "  [top-up — met this pay]".dimmed().to_string(),
-            LineKind::Drawdown if line.need > 0 => {
-                "  [drawdown — behind pace, no catch-up]".yellow().to_string()
-            }
+            LineKind::Drawdown if line.need > 0 => "  [drawdown — behind pace, no catch-up]"
+                .yellow()
+                .to_string(),
             LineKind::Drawdown => "  [drawdown — on pace]".dimmed().to_string(),
             LineKind::Sinking if line.give < line.need => "  <-- short".red().bold().to_string(),
             LineKind::Sinking if line.current > line.target => {
@@ -302,7 +302,7 @@ async fn contributed_since(client: &Sequence, pod_id: &str, since: NaiveDate) ->
             t.created_at
                 .get(..10)
                 .and_then(|s| NaiveDate::parse_from_str(s, "%Y-%m-%d").ok())
-                .map_or(false, |d| d >= since)
+                .is_some_and(|d| d >= since)
         })
         .map(|t| t.amount_in_cents)
         .sum()
@@ -455,8 +455,13 @@ pub async fn assess_with(
                     target: anchor,
                     period_months,
                 } => {
-                    let on_track =
-                        drawdown_on_track(bill.amount_cents, *anchor, *period_months, today, &sched);
+                    let on_track = drawdown_on_track(
+                        bill.amount_cents,
+                        *anchor,
+                        *period_months,
+                        today,
+                        &sched,
+                    );
                     (LineKind::Drawdown, on_track, (on_track - current).max(0))
                 }
                 _ => {
@@ -587,7 +592,10 @@ mod tests {
             line("contrib", 0, 20_000, LineKind::Topup),      // contribution -> never touched
         ]));
         assert_eq!(plan.skims, vec![("ahead".into(), "pod-ahead".into(), 500)]);
-        assert_eq!(plan.fills, vec![("behind".into(), "pod-behind".into(), 300)]);
+        assert_eq!(
+            plan.fills,
+            vec![("behind".into(), "pod-behind".into(), 300)]
+        );
         assert_eq!(plan.boundary, 1); // just-due pod left alone, not drained
     }
 

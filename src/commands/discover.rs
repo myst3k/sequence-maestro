@@ -243,7 +243,7 @@ pub async fn run(cfg: &Config) -> Result<(), Box<dyn std::error::Error + Send + 
         );
 
         if let (Classification::Regular, Some(sc), Some(t)) = (classification, &schedule, typical) {
-            if best_regular.as_ref().map_or(true, |(bt, _)| t > *bt) {
+            if best_regular.as_ref().is_none_or(|(bt, _)| t > *bt) {
                 best_regular = Some((t, sc.clone()));
             }
         }
@@ -273,7 +273,7 @@ pub async fn run(cfg: &Config) -> Result<(), Box<dyn std::error::Error + Send + 
             deposits_seen,
         })
         .collect();
-    pools.sort_by(|a, b| b.deposits_seen.cmp(&a.deposits_seen));
+    pools.sort_by_key(|p| std::cmp::Reverse(p.deposits_seen));
 
     println!("\nincome pool(s) — where your paychecks land:");
     if pools.is_empty() {

@@ -321,7 +321,9 @@ mod tests {
         assert_eq!(b.due_day, None);
         assert_eq!(b.frequency, Frequency::Year);
         assert_eq!(
-            derive_bill("Home / Pest Control / 50 / annual").unwrap().due_day,
+            derive_bill("Home / Pest Control / 50 / annual")
+                .unwrap()
+                .due_day,
             None
         );
     }

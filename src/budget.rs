@@ -40,11 +40,7 @@ pub struct Assembled {
 
 /// Build the budget and full pod accounting from the account list + onboarding
 /// file. `buffer_pct` is added to each bill's funding target (contributions exempt).
-pub fn assemble(
-    accounts: &[AccountSummary],
-    file: Option<&State>,
-    buffer_pct: f64,
-) -> Assembled {
+pub fn assemble(accounts: &[AccountSummary], file: Option<&State>, buffer_pct: f64) -> Assembled {
     let mut warnings = Vec::new();
     let mut not_funded = Vec::new();
     let mut migrate = Vec::new();
@@ -168,6 +164,8 @@ pub fn assemble(
 mod tests {
     use super::*;
 
+    // Amounts use dollar_cents grouping (`100_00` = $100.00) for readability.
+    #[allow(clippy::inconsistent_digit_grouping)]
     #[test]
     fn buffer_adds_pct_and_always_rounds_up_to_the_cent() {
         // $100.00 at 2.5% -> exactly $102.50.

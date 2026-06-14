@@ -154,7 +154,7 @@ async fn monitor(state: Shared) {
             Ok(latest) => {
                 let mut new_deposit = false;
                 for (id, ts) in &latest {
-                    if seen.get(id).map_or(true, |prev| ts > prev) {
+                    if seen.get(id).is_none_or(|prev| ts > prev) {
                         if !first {
                             new_deposit = true;
                         }

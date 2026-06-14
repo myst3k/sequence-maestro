@@ -94,7 +94,7 @@ async fn main() {
 
 async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Colorize only when stdout is a terminal, unless CLICOLOR_FORCE
-    let force = std::env::var("CLICOLOR_FORCE").map_or(false, |v| v != "0");
+    let force = std::env::var("CLICOLOR_FORCE").is_ok_and(|v| v != "0");
     if !force && !std::io::IsTerminal::is_terminal(&std::io::stdout()) {
         colored::control::set_override(false);
     }
