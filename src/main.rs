@@ -66,6 +66,17 @@ enum Command {
         #[arg(long)]
         date: chrono::NaiveDate,
     },
+    /// Actual spend per pod — card purchases + ACH payments
+    Spend {
+        /// Case-insensitive pod-name filter (omit for all pods)
+        filter: Option<String>,
+        /// Lookback window in days
+        #[arg(long, default_value_t = 30)]
+        days: u32,
+        /// Compare actual monthly spend to each pod's declared budget amount
+        #[arg(long)]
+        vs_budget: bool,
+    },
 }
 
 #[tokio::main]
@@ -121,5 +132,10 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             commands::daemon::run(&cfg).await
         }
         Command::Simulate { deposit, date } => commands::simulate::run(&cfg, deposit, date).await,
+        Command::Spend {
+            filter,
+            days,
+            vs_budget,
+        } => commands::spend::run(&cfg, filter.as_deref(), days, vs_budget).await,
     }
 }

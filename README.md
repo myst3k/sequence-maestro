@@ -138,6 +138,7 @@ maestro run --execute     # the same cycle, but actually move the money
 maestro accounts          # account + balance snapshot
 maestro tx <filter>       # recent transfers for pods matching a name
 maestro rules [filter]    # inspect Sequence rules and the amounts they move
+maestro spend [filter]    # actual spend per pod, card + ACH (--vs-budget compares to declared amounts)
 maestro rebalance         # level sinking-fund pods to pace (--execute to move)
 maestro simulate --deposit 1000 --date 2026-07-15   # what-if a deposit on a date, moves nothing
 maestro daemon            # long-running: watch for deposits, fund on arrival (report-only)

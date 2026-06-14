@@ -4,6 +4,7 @@
 
 pub mod allocator;
 pub mod budget;
+pub mod cards;
 pub mod commands;
 pub mod config;
 pub mod derive;

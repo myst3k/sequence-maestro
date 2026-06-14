@@ -1500,8 +1500,8 @@ checksum = "8a7852d02fc848982e0c167ef163aaff9cd91dc640ba85e263cb1ce46fae51cd"
 
 [[package]]
 name = "sequence-rs"
-version = "0.1.0"
-source = "git+https://github.com/myst3k/sequence-rs#5f7d0bf273d7a1a3740a3d59cb46d52b796c1400"
+version = "0.2.0"
+source = "git+https://github.com/myst3k/sequence-rs#2c3aa779ddb3e9abc33d642c76e83d751fb48a53"
 dependencies = [
  "futures",
  "secrecy",
@@ -1519,7 +1519,7 @@ dependencies = [
 [[package]]
 name = "sequence-rs-http"
 version = "0.1.0"
-source = "git+https://github.com/myst3k/sequence-rs#5f7d0bf273d7a1a3740a3d59cb46d52b796c1400"
+source = "git+https://github.com/myst3k/sequence-rs#2c3aa779ddb3e9abc33d642c76e83d751fb48a53"
 dependencies = [
  "rand 0.10.1",
  "reqwest",
@@ -1531,8 +1531,8 @@ dependencies = [
 
 [[package]]
 name = "sequence-rs-model"
-version = "0.1.0"
-source = "git+https://github.com/myst3k/sequence-rs#5f7d0bf273d7a1a3740a3d59cb46d52b796c1400"
+version = "0.2.0"
+source = "git+https://github.com/myst3k/sequence-rs#2c3aa779ddb3e9abc33d642c76e83d751fb48a53"
 dependencies = [
  "serde",
  "serde_json",

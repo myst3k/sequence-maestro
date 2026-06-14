@@ -8,4 +8,5 @@ pub mod finances;
 pub mod rebalance;
 pub mod rules;
 pub mod simulate;
+pub mod spend;
 pub mod tx;
