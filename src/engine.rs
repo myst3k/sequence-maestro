@@ -5,8 +5,6 @@ use std::collections::HashMap;
 
 use chrono::{Duration, NaiveDate, Utc};
 use sequence_rs::model::account::AccountType;
-use sequence_rs::model::transfer::CreateTransferRequest;
-use sequence_rs::prelude::*;
 use sequence_rs::{ListAccountTransfersParams, Sequence};
 
 use crate::allocator::{bill_target, drawdown_on_track, drawdown_slice, plan, PlannedTransfer};
@@ -373,12 +371,12 @@ pub async fn assess_with(
             let slice = drawdown_slice(bill.amount_cents, *target, *period_months, today, &sched);
             if real + slice < on_track {
                 notes.push(format!(
-                    "{}: ${} saved toward ${} by {} — ~${} behind pace (top up to catch up, optional)",
+                    "{}: {} saved toward {} by {} — ~{} behind pace (top up to catch up, optional)",
                     bill.name,
-                    real / 100,
-                    bill.amount_cents / 100,
+                    crate::money::dollars(real),
+                    crate::money::dollars(bill.amount_cents),
                     target,
-                    (on_track - real) / 100,
+                    crate::money::dollars(on_track - real),
                 ));
             }
         }
@@ -440,7 +438,7 @@ pub async fn assess_with(
         .flat_map(|c| &c.bills)
         .filter_map(|b| {
             let due = b.due_day?;
-            let d_last = crate::cards::most_recent_due(due, today);
+            let d_last = crate::schedule::most_recent_due(due, today);
             ((today - d_last).num_days() <= DANGER_DAYS).then_some((b, d_last))
         })
         .collect();
@@ -578,14 +576,7 @@ pub async fn run_cycle(cfg: &Config) -> Result<Report, Box<dyn std::error::Error
         let will_exec = !cfg.dry_run && phase_executes(cfg.phase, leg);
         let (from, to) = (name(&t.from_pod), name(&t.to_pod));
         if will_exec {
-            let req = CreateTransferRequest {
-                source_account_id: t.from_pod.clone(),
-                destination_account_id: t.to_pod.clone(),
-                amount_in_cents: t.amount_cents,
-                description: None,
-            };
-            // Idempotency key: None -> the client generates a uuidv7.
-            client.create_transfer(&req, None).await?;
+            crate::fetch::create_transfer(&client, &t.from_pod, &t.to_pod, t.amount_cents).await?;
             any_executed = true;
             tracing::info!(tag = "EXEC", leg = ?leg, amount_cents = t.amount_cents, %from, %to, "moved money");
         } else {

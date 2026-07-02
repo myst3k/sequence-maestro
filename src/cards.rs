@@ -4,7 +4,6 @@
 //! Pure (no I/O) so the money math is unit-tested here; fetching lives in
 //! `commands::spend`.
 
-use chrono::{Datelike, NaiveDate};
 use sequence_rs::model::transaction::Transaction;
 use sequence_rs::model::transfer::{Transfer, TransferDirection, TransferStatus};
 
@@ -83,23 +82,6 @@ pub fn round_up_to_dollar(cents: i64) -> i64 {
     ((cents + 99) / 100) * 100
 }
 
-/// The most recent occurrence of `due_day` (1–31, clamped to the month's length;
-/// `31` ⇒ last day) on or before `today`.
-pub fn most_recent_due(due_day: u32, today: NaiveDate) -> NaiveDate {
-    let on = |y: i32, m: u32| {
-        let last = crate::schedule::last_day_of_month(y, m).day();
-        NaiveDate::from_ymd_opt(y, m, due_day.min(last)).unwrap()
-    };
-    let this_month = on(today.year(), today.month());
-    if this_month <= today {
-        this_month
-    } else if today.month() == 1 {
-        on(today.year() - 1, 12)
-    } else {
-        on(today.year(), today.month() - 1)
-    }
-}
-
 /// Cents of a bill's scheduled debit not yet cleared this cycle, given how much
 /// has actually gone out since the due date. If at least half the bill has left,
 /// treat the debit as cleared (0); otherwise reserve the remainder so the pod
@@ -126,6 +108,7 @@ pub fn reserved_cents(bill_amount: i64, seen_outflow: i64, balance: i64, target:
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::NaiveDate;
     use sequence_rs::model::transaction::{CardTransactionSubtype, CardType};
     use sequence_rs::model::transfer::{
         TransferAccountRef, TransferOrigin, TransferParticipantType, TransferStatus,
@@ -272,27 +255,6 @@ mod tests {
         assert_eq!(round_up_to_dollar(58952), 59000); // $589.52 -> $590.00
         assert_eq!(round_up_to_dollar(2869), 2900); // $28.69 -> $29.00
         assert_eq!(round_up_to_dollar(59000), 59000); // already whole
-    }
-
-    #[test]
-    fn most_recent_due_this_or_last_month() {
-        let jun15 = NaiveDate::from_ymd_opt(2026, 6, 15).unwrap();
-        // due 10th already passed this month
-        assert_eq!(
-            most_recent_due(10, jun15),
-            NaiveDate::from_ymd_opt(2026, 6, 10).unwrap()
-        );
-        // due 20th not yet this month -> last month's 20th
-        assert_eq!(
-            most_recent_due(20, jun15),
-            NaiveDate::from_ymd_opt(2026, 5, 20).unwrap()
-        );
-        // due 31 in a 30-day month clamps to the last day
-        let jul1 = NaiveDate::from_ymd_opt(2026, 7, 1).unwrap();
-        assert_eq!(
-            most_recent_due(31, jul1),
-            NaiveDate::from_ymd_opt(2026, 6, 30).unwrap()
-        );
     }
 
     #[test]

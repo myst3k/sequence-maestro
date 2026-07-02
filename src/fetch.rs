@@ -9,7 +9,9 @@ use chrono::NaiveDate;
 use futures::TryStreamExt;
 use sequence_rs::model::account::{Account, AccountSummary};
 use sequence_rs::model::transaction::Transaction;
-use sequence_rs::model::transfer::{Transfer, TransferDirection, TransferStatus};
+use sequence_rs::model::transfer::{
+    CreateTransferRequest, Transfer, TransferDirection, TransferStatus,
+};
 use sequence_rs::prelude::*;
 use sequence_rs::{
     ListAccountTransfersParams, ListAccountsParams, ListCardTransactionsParams, Sequence,
@@ -148,6 +150,24 @@ pub async fn outgoing_transfers_since(
         },
     )
     .await
+}
+
+/// The ONLY money-moving call in maestro: one transfer, `from` → `to`. The
+/// idempotency key is left `None` so the client generates a uuidv7 — a retried
+/// request can't double-move money.
+pub async fn create_transfer(
+    client: &Sequence,
+    from: &str,
+    to: &str,
+    amount_cents: i64,
+) -> Result<Transfer, Error> {
+    let req = CreateTransferRequest {
+        source_account_id: from.to_string(),
+        destination_account_id: to.to_string(),
+        amount_in_cents: amount_cents,
+        description: None,
+    };
+    Ok(client.create_transfer(&req, None).await?)
 }
 
 /// Total money OUT of `pod_id` at/after `from`: net card spend + settled ACH.

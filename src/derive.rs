@@ -46,10 +46,16 @@ fn leading_u32(s: &str) -> Option<u32> {
     digits.parse().ok()
 }
 
+/// True for an explicit `G: Name` group pod — the one definition of the marker.
+pub fn is_group_marker(name: &str) -> bool {
+    let t = name.trim_start();
+    t.len() >= 2 && t.as_bytes()[..2].eq_ignore_ascii_case(b"g:")
+}
+
 pub fn parse(name: &str) -> Parsed {
     // Explicit group marker: `G: Home` is the group pod for group "Home".
     let trimmed = name.trim();
-    if trimmed.len() >= 2 && trimmed.as_bytes()[..2].eq_ignore_ascii_case(b"g:") {
+    if is_group_marker(trimmed) {
         let mut g = trimmed[2..].trim();
         // Tolerate a leftover `(total/half)` suffix during migration.
         if g.ends_with(')') {
@@ -180,6 +186,24 @@ fn parse_freq(s: &str) -> Option<Frequency> {
         "quarter" | "quarterly" => Some(Frequency::Quarter),
         "year" | "yearly" | "annual" | "annually" => Some(Frequency::Year),
         "topup" | "paycheck-topup" | "paycheck" | "payday" => Some(Frequency::Paycheck),
+        _ => None,
+    }
+}
+
+/// A pod's declared bill facts — name, amount, frequency — new scheme first,
+/// falling back to the old `Name ($X) - day` naming. `None` for non-bill pods.
+/// The one fallback chain every "what does this pod declare?" consumer shares.
+pub fn declared(pod_name: &str) -> Option<(String, i64, Frequency)> {
+    if let Some(b) = parse_scheme(pod_name) {
+        return Some((b.name, b.amount_cents, b.frequency));
+    }
+    match parse(pod_name) {
+        Parsed::Bill {
+            name, amount_cents, ..
+        }
+        | Parsed::BillNoDueDay { name, amount_cents } => {
+            Some((name, amount_cents, Frequency::Month))
+        }
         _ => None,
     }
 }

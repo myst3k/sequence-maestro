@@ -6,15 +6,9 @@ use std::collections::BTreeMap;
 
 use sequence_rs::model::account::{AccountSummary, AccountType};
 
-use crate::derive::{parse, parse_scheme, DueDay, Frequency, Parsed};
+use crate::derive::{is_group_marker, parse, parse_scheme, DueDay, Frequency, Parsed};
 use crate::model::{Bill, Budget, Category};
 use crate::state::State;
-
-/// True for an explicit `G: Name` group pod.
-fn is_group_marker(name: &str) -> bool {
-    let t = name.trim_start();
-    t.len() >= 2 && t.as_bytes()[..2].eq_ignore_ascii_case(b"g:")
-}
 
 /// Add the safety buffer to a bill's amount — except contributions (`Paycheck`),
 /// which are a chosen amount, not a bill to over-cover. Rounds up to the cent.

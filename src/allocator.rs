@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::derive::Frequency;
 use crate::model::{Bill, Budget};
-use crate::schedule::{last_day_of_month, PaySchedule};
+use crate::schedule::{last_day_of_month, minus_one_month, next_due, PaySchedule};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlannedTransfer {
@@ -38,42 +38,13 @@ pub enum FundingStrategy {
     Proportional,
 }
 
-/// Next occurrence of `due_day` on or after `today` (clamped to month length).
-fn next_due(today: NaiveDate, due_day: u32) -> NaiveDate {
-    let clamp = |y: i32, m: u32| {
-        let last = last_day_of_month(y, m).day();
-        NaiveDate::from_ymd_opt(y, m, due_day.min(last)).unwrap()
-    };
-    let this = clamp(today.year(), today.month());
-    if this >= today {
-        return this;
-    }
-    if today.month() == 12 {
-        clamp(today.year() + 1, 1)
-    } else {
-        clamp(today.year(), today.month() + 1)
-    }
-}
-
-/// The same day one month earlier (clamped to month length). The start of a
-/// monthly bill's accrual window — the previous time it was due.
-fn minus_one_month(d: NaiveDate) -> NaiveDate {
-    let (y, m) = if d.month() == 1 {
-        (d.year() - 1, 12)
-    } else {
-        (d.year(), d.month() - 1)
-    };
-    let last = last_day_of_month(y, m).day();
-    NaiveDate::from_ymd_opt(y, m, d.day().min(last)).unwrap()
-}
-
 /// What a monthly due-day bill *should* hold as of `today`: an equal share accrues
 /// on each payday *before* the due date, reaching 100% by the last one. A same-day
 /// paycheck isn't banked on (pay can land late; you might not click a manual payment
 /// in time; an autopay can pull before the deposit clears), so a bill due on a payday
 /// must already be full from the prior payday.
 pub fn target_for(amount_cents: i64, due_day: u32, today: NaiveDate, sched: &PaySchedule) -> i64 {
-    let due = next_due(today, due_day);
+    let due = next_due(due_day, today);
     let window_start = minus_one_month(due);
     let funding = sched.paydays_in(window_start + Duration::days(1), due - Duration::days(1));
     let total = funding.len() as i64;
@@ -175,7 +146,7 @@ fn target_cents(bill: &Bill, today: NaiveDate, sched: &PaySchedule) -> i64 {
 /// its frequency period for no-due bills.
 fn sort_due(bill: &Bill, today: NaiveDate) -> NaiveDate {
     match bill.due_day {
-        Some(d) => next_due(today, d),
+        Some(d) => next_due(d, today),
         None => match &bill.frequency {
             Frequency::Paycheck => today, // due now — fund it this payday
             Frequency::Drawdown {

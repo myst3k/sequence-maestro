@@ -3,9 +3,6 @@
 //! Dry run unless `--execute`. MANUAL-ONLY by design: a one-off setup tool, NEVER
 //! called from the daemon or any cycle and never to be automated.
 
-use sequence_rs::model::transfer::CreateTransferRequest;
-use sequence_rs::prelude::*;
-
 use crate::config::Config;
 use crate::engine::{assess, rebalance_plan};
 use crate::money::dollars as d;
@@ -71,26 +68,12 @@ pub async fn run(
     if execute {
         let client = cfg.client();
         for (n, pod, amt) in skims {
-            let req = CreateTransferRequest {
-                source_account_id: pod.clone(),
-                destination_account_id: hub_id.clone(),
-                amount_in_cents: *amt,
-                description: None,
-            };
-            // Idempotency key: None -> the client generates a uuidv7.
-            client.create_transfer(&req, None).await?;
+            crate::fetch::create_transfer(&client, pod, &hub_id, *amt).await?;
             tracing::info!(amount_cents = *amt, from = %n, to = %to, "rebalance: skimmed");
             println!("  skimmed {} from {n}", d(*amt));
         }
         for (n, pod, amt) in fills {
-            let req = CreateTransferRequest {
-                source_account_id: hub_id.clone(),
-                destination_account_id: pod.clone(),
-                amount_in_cents: *amt,
-                description: None,
-            };
-            // Idempotency key: None -> the client generates a uuidv7.
-            client.create_transfer(&req, None).await?;
+            crate::fetch::create_transfer(&client, &hub_id, pod, *amt).await?;
             tracing::info!(amount_cents = *amt, from = %to, to = %n, "rebalance: filled");
             println!("  filled {} into {n}", d(*amt));
         }

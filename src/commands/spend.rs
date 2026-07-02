@@ -15,7 +15,7 @@ use crate::cards::{
     net_spend_cents, round_up_to_dollar,
 };
 use crate::config::Config;
-use crate::derive::{self, Frequency, Parsed};
+use crate::derive::{self, Frequency};
 use crate::fetch;
 use crate::money::dollars;
 
@@ -190,7 +190,7 @@ fn report_vs_budget(cfg: &Config, spends: &[PodSpend], days: u32) {
     );
     for s in spends {
         let actual_m = monthly_run_rate_cents(s.total(), days as i64);
-        match declared_amount(&s.pod.name) {
+        match derive::declared(&s.pod.name) {
             Some((name, amt, freq)) => {
                 // A `topup` pod's declared amount is a per-paycheck CAP (the top-up
                 // is gap-aware, funding only up to it), not a fixed bill — so spending
@@ -255,20 +255,4 @@ fn report_vs_budget(cfg: &Config, spends: &[PodSpend], days: u32) {
         format!("(card + ACH spend; rates projected from a {days}d window)")
     };
     println!("\n{}", footer.dimmed());
-}
-
-/// The declared bill name + amount + frequency from a pod name (new scheme, then old).
-fn declared_amount(pod_name: &str) -> Option<(String, i64, Frequency)> {
-    if let Some(b) = derive::parse_scheme(pod_name) {
-        return Some((b.name, b.amount_cents, b.frequency));
-    }
-    match derive::parse(pod_name) {
-        Parsed::Bill {
-            name, amount_cents, ..
-        }
-        | Parsed::BillNoDueDay { name, amount_cents } => {
-            Some((name, amount_cents, Frequency::Month))
-        }
-        _ => None,
-    }
 }

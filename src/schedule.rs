@@ -18,6 +18,48 @@ pub fn last_day_of_month(year: i32, month: u32) -> NaiveDate {
         .unwrap()
 }
 
+/// `day` of the given month, clamped to the month's length (so `31` works in
+/// every month). The one clamp used by all due-day/payday math.
+pub fn clamped_day(year: i32, month: u32, day: u32) -> NaiveDate {
+    let last = last_day_of_month(year, month).day();
+    NaiveDate::from_ymd_opt(year, month, day.min(last)).unwrap()
+}
+
+/// Next occurrence of `due_day` on or after `today`.
+pub fn next_due(due_day: u32, today: NaiveDate) -> NaiveDate {
+    let this = clamped_day(today.year(), today.month(), due_day);
+    if this >= today {
+        this
+    } else if today.month() == 12 {
+        clamped_day(today.year() + 1, 1, due_day)
+    } else {
+        clamped_day(today.year(), today.month() + 1, due_day)
+    }
+}
+
+/// Most recent occurrence of `due_day` on or before `today`.
+pub fn most_recent_due(due_day: u32, today: NaiveDate) -> NaiveDate {
+    let this = clamped_day(today.year(), today.month(), due_day);
+    if this <= today {
+        this
+    } else if today.month() == 1 {
+        clamped_day(today.year() - 1, 12, due_day)
+    } else {
+        clamped_day(today.year(), today.month() - 1, due_day)
+    }
+}
+
+/// The same day one month earlier (clamped). The start of a monthly bill's
+/// accrual window — the previous time it was due.
+pub fn minus_one_month(d: NaiveDate) -> NaiveDate {
+    let (y, m) = if d.month() == 1 {
+        (d.year() - 1, 12)
+    } else {
+        (d.year(), d.month() - 1)
+    };
+    clamped_day(y, m, d.day())
+}
+
 /// Shift a weekend date back to the preceding Friday.
 fn shift_for_weekend(d: NaiveDate) -> NaiveDate {
     match d.weekday() {
@@ -29,13 +71,11 @@ fn shift_for_weekend(d: NaiveDate) -> NaiveDate {
 
 /// A day of the month where `-1` means "the last day" (clamped to month length).
 fn resolve_month_day(year: i32, month: u32, day: i32) -> NaiveDate {
-    let last = last_day_of_month(year, month).day();
-    let d = if day < 0 {
-        last
+    if day < 0 {
+        last_day_of_month(year, month)
     } else {
-        (day as u32).min(last)
-    };
-    NaiveDate::from_ymd_opt(year, month, d).unwrap()
+        clamped_day(year, month, day as u32)
+    }
 }
 
 /// How paychecks recur. Discovered from income history and saved; the engine
@@ -172,6 +212,22 @@ mod tests {
         assert_eq!(last_day_of_month(2026, 2), d(2026, 2, 28));
         assert_eq!(last_day_of_month(2026, 4), d(2026, 4, 30));
         assert_eq!(last_day_of_month(2026, 12), d(2026, 12, 31));
+    }
+
+    #[test]
+    fn due_dates_walk_forward_and_back_with_clamping() {
+        // next: due 10th already passed -> next month; due 20th ahead -> this month
+        assert_eq!(next_due(10, d(2026, 6, 15)), d(2026, 7, 10));
+        assert_eq!(next_due(20, d(2026, 6, 15)), d(2026, 6, 20));
+        // most recent: mirror of the above
+        assert_eq!(most_recent_due(10, d(2026, 6, 15)), d(2026, 6, 10));
+        assert_eq!(most_recent_due(20, d(2026, 6, 15)), d(2026, 5, 20));
+        // due 31 clamps to the month's length in both directions
+        assert_eq!(most_recent_due(31, d(2026, 7, 1)), d(2026, 6, 30));
+        assert_eq!(next_due(31, d(2026, 2, 10)), d(2026, 2, 28));
+        // year boundaries
+        assert_eq!(most_recent_due(20, d(2026, 1, 5)), d(2025, 12, 20));
+        assert_eq!(next_due(5, d(2026, 12, 20)), d(2027, 1, 5));
     }
 
     #[test]
