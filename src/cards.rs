@@ -104,7 +104,7 @@ pub fn most_recent_due(due_day: u32, today: NaiveDate) -> NaiveDate {
 /// has actually gone out since the due date. If at least half the bill has left,
 /// treat the debit as cleared (0); otherwise reserve the remainder so the pod
 /// isn't mistaken for "full" before a slow/weekend debit hits.
-pub fn uncleared_debit_cents(bill_amount: i64, seen_outflow: i64) -> i64 {
+fn uncleared_debit_cents(bill_amount: i64, seen_outflow: i64) -> i64 {
     if seen_outflow * 2 >= bill_amount {
         0
     } else {
