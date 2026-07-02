@@ -67,16 +67,18 @@ fn minus_one_month(d: NaiveDate) -> NaiveDate {
     NaiveDate::from_ymd_opt(y, m, d.day().min(last)).unwrap()
 }
 
-/// How much a monthly due-day bill *should* hold as of `today`: it accrues an
-/// equal share on each payday in its window (previous due → this due), reaching
-/// 100% by the due date.
+/// What a monthly due-day bill *should* hold as of `today`: an equal share accrues
+/// on each payday *before* the due date, reaching 100% by the last one. A same-day
+/// paycheck isn't banked on (pay can land late; you might not click a manual payment
+/// in time; an autopay can pull before the deposit clears), so a bill due on a payday
+/// must already be full from the prior payday.
 pub fn target_for(amount_cents: i64, due_day: u32, today: NaiveDate, sched: &PaySchedule) -> i64 {
     let due = next_due(today, due_day);
     let window_start = minus_one_month(due);
-    let funding = sched.paydays_in(window_start + Duration::days(1), due);
+    let funding = sched.paydays_in(window_start + Duration::days(1), due - Duration::days(1));
     let total = funding.len() as i64;
     if total == 0 {
-        return amount_cents; // no paydays to spread across — fund it fully
+        return amount_cents; // nothing lands before the due date — fund it fully now
     }
     let occurred = funding.iter().filter(|&&pd| pd <= today).count() as i64;
     amount_cents * occurred / total
@@ -387,6 +389,15 @@ mod tests {
         assert_eq!(target_cents(&b, d(2026, 5, 20), &semi()), 30_000);
         // after May 29 too -> 100% before the June 10th due date
         assert_eq!(target_cents(&b, d(2026, 6, 5), &semi()), 60_000);
+    }
+
+    #[test]
+    fn bill_due_on_a_payday_must_be_full_by_the_prior_payday() {
+        // a bill due on a payday (the last day) isn't banked on the same-day paycheck —
+        // it must already be full from the prior payday, ready before the due date.
+        let b = bill("card", 40_000, 31); // 31 = last day
+        assert_eq!(target_cents(&b, d(2026, 6, 10), &semi()), 0); // before the 15th
+        assert_eq!(target_cents(&b, d(2026, 6, 23), &semi()), 40_000); // after the 15th
     }
 
     #[test]
