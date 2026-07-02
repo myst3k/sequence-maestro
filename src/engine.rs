@@ -7,7 +7,7 @@ use chrono::{Duration, NaiveDate, Utc};
 use sequence_rs::model::account::AccountType;
 use sequence_rs::model::transfer::CreateTransferRequest;
 use sequence_rs::prelude::*;
-use sequence_rs::{ListAccountTransfersParams, ListAccountsParams, Sequence};
+use sequence_rs::{ListAccountTransfersParams, Sequence};
 
 use crate::allocator::{bill_target, drawdown_on_track, drawdown_slice, plan, PlannedTransfer};
 use crate::budget::assemble;
@@ -290,33 +290,31 @@ pub fn render(report: &Report) -> String {
     out
 }
 
-/// Total money that landed in `pod_id` on or after `since` — used to tell whether
-/// a per-paycheck contribution has already been made this period.
-async fn contributed_since(client: &Sequence, pod_id: &str, since: NaiveDate) -> i64 {
-    let page = match client
-        .account_transfers(
-            &pod_id.to_string(),
-            &ListAccountTransfersParams {
-                page_size: Some(50),
-                ..Default::default()
-            },
-        )
-        .await
-    {
-        Ok(p) => p,
-        Err(_) => return 0,
-    };
-    page.items
+/// Total money that actually landed in `pod_id` (settled transfers only) on or
+/// after `since` — tells whether a per-paycheck contribution was already made this
+/// period. A failed read is an error, not $0: "no contribution seen" would re-fund
+/// the pod and double-pay it.
+async fn contributed_since(
+    client: &Sequence,
+    pod_id: &str,
+    since: NaiveDate,
+) -> Result<i64, Box<dyn std::error::Error + Send + Sync>> {
+    let transfers = crate::fetch::transfers(
+        client,
+        pod_id,
+        ListAccountTransfersParams {
+            from: Some(format!("{since}T00:00:00Z")),
+            ..Default::default()
+        },
+    )
+    .await?;
+    Ok(transfers
         .iter()
+        .filter(|t| crate::fetch::settled(t))
         .filter(|t| t.destination.as_ref().and_then(|d| d.id.as_deref()) == Some(pod_id))
-        .filter(|t| {
-            t.created_at
-                .get(..10)
-                .and_then(|s| NaiveDate::parse_from_str(s, "%Y-%m-%d").ok())
-                .is_some_and(|d| d >= since)
-        })
+        .filter(|t| crate::fetch::parse_date(&t.created_at).is_some_and(|d| d >= since))
         .map(|t| t.amount_in_cents)
-        .sum()
+        .sum())
 }
 
 /// Simulation overrides for `assess`: pretend it's `today` and add `deposit_cents`
@@ -333,56 +331,6 @@ pub async fn assess(cfg: &Config) -> Result<Report, Box<dyn std::error::Error + 
     assess_with(cfg, SimInput::default()).await
 }
 
-/// Milliseconds to stagger the start of each per-pod balance GET. The list
-/// endpoint omits balances, so each pod needs its own call; firing all ~50 at once
-/// stampedes the API — calls fail and were silently read as $0, flip-flopping
-/// funding run to run. Staggering keeps only a handful in flight at a time so the
-/// client's rate limit + retries hold, without the ~30s of going fully serial.
-const BALANCE_STAGGER_MS: u64 = 100;
-
-/// Per-pod balances, each GET started a little after the last so they don't
-/// stampede. Any that still failed are retried once serially (gentlest possible);
-/// a balance we still can't read aborts the run — a money planner must never act
-/// on a pod it couldn't actually read, since a phantom $0 moves real money.
-async fn fetch_balances(
-    client: &sequence_rs::Sequence,
-    pod_ids: &[String],
-) -> Result<HashMap<String, i64>, Box<dyn std::error::Error + Send + Sync>> {
-    let fetched = futures::future::join_all(pod_ids.iter().enumerate().map(|(i, id)| async move {
-        tokio::time::sleep(std::time::Duration::from_millis(
-            i as u64 * BALANCE_STAGGER_MS,
-        ))
-        .await;
-        client.account(id).await
-    }))
-    .await;
-
-    let mut balances = HashMap::new();
-    let mut missing = Vec::new();
-    for (id, res) in pod_ids.iter().zip(fetched) {
-        match res {
-            Ok(a) => {
-                balances.insert(
-                    id.clone(),
-                    a.balance.and_then(|b| b.balance_in_cents).unwrap_or(0),
-                );
-            }
-            Err(_) => missing.push(id),
-        }
-    }
-    for id in missing {
-        let a = client
-            .account(id)
-            .await
-            .map_err(|e| format!("could not read balance for pod {id}: {e}"))?;
-        balances.insert(
-            id.clone(),
-            a.balance.and_then(|b| b.balance_in_cents).unwrap_or(0),
-        );
-    }
-    Ok(balances)
-}
-
 /// `assess` with optional simulation overrides (date + injected deposit). With a
 /// default `SimInput` it's identical to `assess`.
 pub async fn assess_with(
@@ -395,27 +343,21 @@ pub async fn assess_with(
     let (sched, _) = cfg.pay_schedule();
     let strategy = cfg.funding_strategy();
 
-    let page = client
-        .accounts(&ListAccountsParams {
-            page_size: Some(100),
-            ..Default::default()
-        })
-        .await?;
+    let accounts = crate::fetch::accounts(&client).await?;
 
     let mut names = HashMap::new();
-    for a in &page.items {
+    for a in &accounts {
         names.insert(a.id.clone(), a.name.clone());
     }
     // pod balances: the list endpoint omits them, so each pod needs its own GET.
-    let pod_ids: Vec<String> = page
-        .items
+    let pod_ids: Vec<String> = accounts
         .iter()
         .filter(|a| a.account_type == AccountType::Pod)
         .map(|a| a.id.clone())
         .collect();
-    let mut balances = fetch_balances(&client, &pod_ids).await?;
+    let mut balances = crate::fetch::balances(&client, &pod_ids).await?;
 
-    let assembled = assemble(&page.items, file.as_ref(), cfg.buffer_pct);
+    let assembled = assemble(&accounts, file.as_ref(), cfg.buffer_pct);
 
     // Drawdown notes: how far behind pace each drawdown pod is — never auto-catches-up
     let mut notes = Vec::new();
@@ -467,7 +409,11 @@ pub async fn assess_with(
             .map(|pod_id| contributed_since(&client, pod_id, period_start)),
     )
     .await;
-    let contributed: HashMap<String, i64> = contrib_pods.iter().cloned().zip(contribs).collect();
+    let mut contributed: HashMap<String, i64> = HashMap::new();
+    for (pod_id, res) in contrib_pods.iter().zip(contribs) {
+        let c = res.map_err(|e| format!("could not read contributions for pod {pod_id}: {e}"))?;
+        contributed.insert(pod_id.clone(), c);
+    }
 
     // sim: inject the pretend paycheck into the pool (shown + planned against)
     if sim.deposit_cents != 0 {
@@ -504,11 +450,10 @@ pub async fn assess_with(
     let mut reserved: HashMap<String, i64> = HashMap::new();
     for (b, d_last) in &at_risk {
         let from = format!("{}T00:00:00Z", *d_last - Duration::days(DEBIT_LEAD_DAYS));
-        // A failed fetch (None) means we don't know — don't reserve, lest a transient
+        // A failed fetch means we don't know — don't reserve, lest a transient
         // API error read as a missing debit. Cap at the real balance: a pod can only
         // have committed what it actually holds (else need double-counts the bill).
-        let Some(seen) = crate::outflow::outflow_since_cents(&client, &b.pod_id, &from).await
-        else {
+        let Ok(seen) = crate::fetch::outflow_since_cents(&client, &b.pod_id, &from).await else {
             continue;
         };
         let current = balances.get(&b.pod_id).copied().unwrap_or(0);

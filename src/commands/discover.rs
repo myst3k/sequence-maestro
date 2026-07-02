@@ -8,19 +8,13 @@
 
 use crate::allocator::FundingStrategy;
 use crate::config::Config;
+use crate::fetch;
 use crate::money::dollars;
-use crate::schedule::PaySchedule;
+use crate::schedule::{last_day_of_month, PaySchedule};
 use crate::state::{Classification, IncomeSource, PoolRef, State};
 use chrono::{Datelike, NaiveDate, Utc, Weekday};
 use sequence_rs::model::account::AccountType;
 use sequence_rs::model::transfer::{TransferDirection, TransferParticipantType};
-use sequence_rs::prelude::*;
-use sequence_rs::{ListAccountTransfersParams, ListAccountsParams};
-
-/// Parse the leading `YYYY-MM-DD` of an ISO timestamp.
-fn parse_date(s: &str) -> Option<NaiveDate> {
-    NaiveDate::parse_from_str(s.get(..10)?, "%Y-%m-%d").ok()
-}
 
 fn median(mut xs: Vec<i64>) -> i64 {
     xs.sort_unstable();
@@ -50,17 +44,7 @@ fn mode(xs: &[i64]) -> Option<i64> {
 
 /// A day in the last 3 days of its month is treated as "last day" (-1).
 fn month_day_token(d: NaiveDate) -> i64 {
-    let last = {
-        let (y, m) = if d.month() == 12 {
-            (d.year() + 1, 1)
-        } else {
-            (d.year(), d.month() + 1)
-        };
-        NaiveDate::from_ymd_opt(y, m, 1)
-            .unwrap()
-            .pred_opt()
-            .unwrap()
-    };
+    let last = last_day_of_month(d.year(), d.month());
     if (last.day() - d.day()) <= 2 {
         -1
     } else {
@@ -166,35 +150,23 @@ pub async fn run(cfg: &Config) -> Result<(), Box<dyn std::error::Error + Send + 
     let today = Utc::now().date_naive();
     let cutoff = today - chrono::Duration::days(730); // ~2 years for cadence
 
-    let page = client
-        .accounts(&ListAccountsParams {
-            page_size: Some(100),
-            ..Default::default()
-        })
-        .await?;
+    let accounts = fetch::accounts(&client).await?;
 
     let mut sources: Vec<IncomeSource> = Vec::new();
     let mut best_regular: Option<(i64, PaySchedule)> = None; // (typical, schedule)
                                                              // Where income flows: pod id -> (name, times seen). The top one is the pool.
     let mut pool_votes: std::collections::HashMap<String, (String, u32)> = Default::default();
 
-    for s in &page.items {
+    for s in &accounts {
         if !matches!(s.account_type, AccountType::IncomeSource) {
             continue;
         }
-        let transfers = client
-            .account_transfers(
-                &s.id,
-                &ListAccountTransfersParams {
-                    page_size: Some(100),
-                    ..Default::default()
-                },
-            )
-            .await?;
+        // every transfer, all pages — a single page truncates 2 years of cadence data
+        let transfers = fetch::transfers(&client, &s.id, Default::default()).await?;
 
         // Trace outbound destinations — that pool is what the engine funds bills from
-        for t in &transfers.items {
-            if t.direction == TransferDirection::MoneyIn {
+        for t in &transfers {
+            if t.direction == TransferDirection::MoneyIn || !fetch::settled(t) {
                 continue;
             }
             if let Some(dest) = &t.destination {
@@ -210,12 +182,11 @@ pub async fn run(cfg: &Config) -> Result<(), Box<dyn std::error::Error + Send + 
             }
         }
 
-        // Deposits only, within the cadence window, ascending by date.
+        // Settled deposits only, within the cadence window, ascending by date.
         let mut deposits: Vec<(NaiveDate, i64)> = transfers
-            .items
             .iter()
-            .filter(|t| t.direction == TransferDirection::MoneyIn)
-            .filter_map(|t| parse_date(&t.created_at).map(|d| (d, t.amount_in_cents)))
+            .filter(|t| t.direction == TransferDirection::MoneyIn && fetch::settled(t))
+            .filter_map(|t| fetch::parse_date(&t.created_at).map(|d| (d, t.amount_in_cents)))
             .filter(|(d, _)| *d >= cutoff)
             .collect();
         deposits.sort_by_key(|(d, _)| *d);
@@ -286,12 +257,11 @@ pub async fn run(cfg: &Config) -> Result<(), Box<dyn std::error::Error + Send + 
     let funding_strategy = prompt_strategy();
 
     // rebalance target: pod named like "emergency" (falls back to "savings")
-    let reclaim_pod = page
-        .items
+    let reclaim_pod = accounts
         .iter()
         .find(|a| a.name.to_lowercase().contains("emergency"))
         .or_else(|| {
-            page.items
+            accounts
                 .iter()
                 .find(|a| a.name.to_lowercase().contains("savings"))
         })

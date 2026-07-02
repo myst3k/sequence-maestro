@@ -9,8 +9,6 @@ use colored::Colorize;
 use sequence_rs::model::account::{AccountSummary, AccountType};
 use sequence_rs::model::transaction::{CardTransactionSubtype, Transaction};
 use sequence_rs::model::transfer::{Transfer, TransferDirection, TransferStatus};
-use sequence_rs::prelude::*;
-use sequence_rs::ListAccountsParams;
 
 use crate::cards::{
     ach_outflow_cents, declared_monthly_cents, monthly_run_rate_cents, native_from_monthly_cents,
@@ -18,8 +16,8 @@ use crate::cards::{
 };
 use crate::config::Config;
 use crate::derive::{self, Frequency, Parsed};
+use crate::fetch;
 use crate::money::dollars;
-use crate::outflow::{fetch_ach, fetch_card};
 
 /// One outflow row, normalized across card + ACH for display.
 struct Entry {
@@ -53,15 +51,9 @@ pub async fn run(
     vs_budget: bool,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let client = cfg.client();
-    let page = client
-        .accounts(&ListAccountsParams {
-            page_size: Some(100),
-            ..Default::default()
-        })
-        .await?;
+    let accounts = fetch::accounts(&client).await?;
     let needle = filter.unwrap_or("").to_lowercase();
-    let pods: Vec<&AccountSummary> = page
-        .items
+    let pods: Vec<&AccountSummary> = accounts
         .iter()
         .filter(|a| a.account_type == AccountType::Pod && a.name.to_lowercase().contains(&needle))
         .collect();
@@ -74,8 +66,12 @@ pub async fn run(
         let from = from.clone();
         async move {
             (
-                fetch_card(cref, &pod_id, &from).await.unwrap_or_default(),
-                fetch_ach(cref, &pod_id, &from).await.unwrap_or_default(),
+                fetch::card_transactions_since(cref, &pod_id, &from)
+                    .await
+                    .unwrap_or_default(),
+                fetch::outgoing_transfers_since(cref, &pod_id, &from)
+                    .await
+                    .unwrap_or_default(),
             )
         }
     }))

@@ -10,7 +10,7 @@ use sequence_rs::model::rule::{
     PercentageTarget, RuleAction, RuleActionKind, TransferCapPeriod, Trigger,
 };
 use sequence_rs::prelude::*;
-use sequence_rs::{ListAccountsParams, ListRulesParams};
+use sequence_rs::ListRulesParams;
 
 use crate::money::dollars as money;
 
@@ -37,12 +37,12 @@ fn describe(a: &RuleAction, names: &HashMap<String, String>) -> String {
             percentage_value,
             percentage_target,
         } => {
-            // Stored as a fraction (0.5 = 50%).
             let of = match percentage_target {
                 PercentageTarget::IncomingAmount => "of incoming",
                 PercentageTarget::SourceAccount => "of balance",
             };
-            format!("{}% {of}", percentage_value * 100.0)
+            // the API reports percentageValue on the 0–100 scale
+            format!("{percentage_value}% {of}")
         }
         RuleActionKind::TopUp {
             amount_in_cents: Some(c),
@@ -77,14 +77,8 @@ pub async fn run(
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let client = cfg.client();
-    let accts = client
-        .accounts(&ListAccountsParams {
-            page_size: Some(100),
-            ..Default::default()
-        })
-        .await?;
+    let accts = crate::fetch::accounts(&client).await?;
     let names: HashMap<String, String> = accts
-        .items
         .iter()
         .map(|a| (a.id.clone(), a.name.clone()))
         .collect();
@@ -97,16 +91,20 @@ pub async fn run(
         .await?;
     let needle = filter.map(|s| s.to_lowercase());
 
-    // fetch each supported rule's full detail concurrently — was serial GET per rule
+    // Each supported rule's full detail, fetched serially: it's a handful of GETs,
+    // and a listing with silently dropped rules reads as "that rule doesn't exist".
     let supported: Vec<_> = list.items.iter().filter(|s| s.is_supported).collect();
-    let details = futures::future::join_all(supported.iter().map(|s| client.rule(&s.id))).await;
+    let mut details = Vec::with_capacity(supported.len());
+    for s in &supported {
+        details.push(
+            client
+                .rule(&s.id)
+                .await
+                .map_err(|e| format!("could not read rule {}: {e}", s.id))?,
+        );
+    }
 
-    for (summary, rule_res) in supported.iter().zip(details) {
-        let rule = match rule_res {
-            Ok(r) => r,
-            Err(_) => continue,
-        };
-
+    for (summary, rule) in supported.iter().zip(details) {
         let name_hit = summary
             .name
             .as_deref()

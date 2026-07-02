@@ -13,8 +13,6 @@ use axum::{
 use chrono::Utc;
 use sequence_rs::model::account::AccountType;
 use sequence_rs::model::transfer::TransferDirection;
-use sequence_rs::prelude::*;
-use sequence_rs::{ListAccountTransfersParams, ListAccountsParams};
 use serde::Serialize;
 use tokio::net::TcpListener;
 use tokio::sync::RwLock;
@@ -202,30 +200,17 @@ async fn latest_deposits(
     cfg: &Config,
 ) -> Result<HashMap<String, String>, Box<dyn std::error::Error + Send + Sync>> {
     let client = cfg.client();
-    let page = client
-        .accounts(&ListAccountsParams {
-            page_size: Some(100),
-            ..Default::default()
-        })
-        .await?;
+    let accounts = crate::fetch::accounts(&client).await?;
     let mut out = HashMap::new();
-    for a in &page.items {
+    for a in &accounts {
         if a.account_type != AccountType::IncomeSource {
             continue;
         }
-        let transfers = client
-            .account_transfers(
-                &a.id,
-                &ListAccountTransfersParams {
-                    page_size: Some(5),
-                    ..Default::default()
-                },
-            )
-            .await?;
+        let transfers = crate::fetch::recent_transfers(&client, &a.id, 5).await?;
+        // settled only — money that hasn't cleared isn't a deposit to fund from
         if let Some(newest) = transfers
-            .items
             .iter()
-            .filter(|t| t.direction == TransferDirection::MoneyIn)
+            .filter(|t| t.direction == TransferDirection::MoneyIn && crate::fetch::settled(t))
             .map(|t| t.created_at.clone())
             .max()
         {

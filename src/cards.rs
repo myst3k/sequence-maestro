@@ -87,7 +87,7 @@ pub fn round_up_to_dollar(cents: i64) -> i64 {
 /// `31` ⇒ last day) on or before `today`.
 pub fn most_recent_due(due_day: u32, today: NaiveDate) -> NaiveDate {
     let on = |y: i32, m: u32| {
-        let last = last_day_of_month(y, m);
+        let last = crate::schedule::last_day_of_month(y, m).day();
         NaiveDate::from_ymd_opt(y, m, due_day.min(last)).unwrap()
     };
     let this_month = on(today.year(), today.month());
@@ -98,15 +98,6 @@ pub fn most_recent_due(due_day: u32, today: NaiveDate) -> NaiveDate {
     } else {
         on(today.year(), today.month() - 1)
     }
-}
-
-fn last_day_of_month(y: i32, m: u32) -> u32 {
-    let (ny, nm) = if m == 12 { (y + 1, 1) } else { (y, m + 1) };
-    NaiveDate::from_ymd_opt(ny, nm, 1)
-        .unwrap()
-        .pred_opt()
-        .unwrap()
-        .day()
 }
 
 /// Cents of a bill's scheduled debit not yet cleared this cycle, given how much

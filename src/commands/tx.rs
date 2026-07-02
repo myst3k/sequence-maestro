@@ -3,54 +3,35 @@
 //! into your pods vs. what the engine thinks should.
 
 use crate::config::Config;
+use crate::fetch;
 use crate::money::dollars;
 use sequence_rs::model::account::AccountType;
 use sequence_rs::model::transfer::TransferDirection;
-use sequence_rs::prelude::*;
-use sequence_rs::{ListAccountTransfersParams, ListAccountsParams};
 
 pub async fn run(
     cfg: &Config,
     filter: &str,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let client = cfg.client();
-    let page = client
-        .accounts(&ListAccountsParams {
-            page_size: Some(100),
-            ..Default::default()
-        })
-        .await?;
+    let accounts = fetch::accounts(&client).await?;
     let needle = filter.to_lowercase();
-    let pods: Vec<_> = page
-        .items
+    let pods: Vec<_> = accounts
         .iter()
         .filter(|a| a.account_type == AccountType::Pod && a.name.to_lowercase().contains(&needle))
         .collect();
 
-    // balance + recent transfers per pod, fetched concurrently — was serial per pod
+    // hardened balances (no phantom $0), then recent transfers per pod concurrently
+    let ids: Vec<String> = pods.iter().map(|a| a.id.clone()).collect();
+    let balances = fetch::balances(&client, &ids).await?;
     let cref = &client;
-    let fetched = futures::future::join_all(pods.iter().map(|a| async move {
-        let bal = cref
-            .account(&a.id)
-            .await
-            .ok()
-            .and_then(|x| x.balance)
-            .and_then(|b| b.balance_in_cents)
-            .unwrap_or(0);
-        let tx = cref
-            .account_transfers(
-                &a.id,
-                &ListAccountTransfersParams {
-                    page_size: Some(20),
-                    ..Default::default()
-                },
-            )
-            .await;
-        (bal, tx)
-    }))
+    let fetched = futures::future::join_all(
+        pods.iter()
+            .map(|a| fetch::recent_transfers(cref, &a.id, 20)),
+    )
     .await;
 
-    for (a, (bal, tx)) in pods.iter().zip(fetched) {
+    for (a, tx) in pods.iter().zip(fetched) {
+        let bal = balances.get(&a.id).copied().unwrap_or(0);
         println!("\n=== {}  (balance {}) ===", a.name, dollars(bal));
         let tx = match tx {
             Ok(t) => t,
@@ -59,7 +40,7 @@ pub async fn run(
                 continue;
             }
         };
-        for t in &tx.items {
+        for t in &tx {
             let arrow = match t.direction {
                 TransferDirection::MoneyIn => "IN  ←",
                 TransferDirection::MoneyOut => "OUT →",
