@@ -54,6 +54,9 @@ pub struct BillLine {
     pub target: i64,
     pub need: i64,
     pub give: i64,
+    /// Money committed to a scheduled debit that hasn't cleared this cycle (a late
+    /// ACH/weekend slip). Decisions use the effective balance `current - reserved`.
+    pub reserved: i64,
     pub kind: LineKind,
 }
 
@@ -119,7 +122,7 @@ pub fn rebalance_plan(report: &Report) -> RebalancePlan {
         if line.is_contribution() {
             continue; // income-funded — not ours to skim
         }
-        let diff = line.current - line.target;
+        let diff = (line.current - line.reserved) - line.target;
         if line.target == 0 && diff >= 100 {
             boundary += 1; // just-due: holding for the bill, don't drain
         } else if diff >= 100 {
@@ -164,20 +167,28 @@ pub fn render(report: &Report) -> String {
         } else {
             need_cell.dimmed().to_string()
         };
-        let tail = match line.kind {
-            LineKind::Topup if line.need > 0 => "  [top-up — owes this pay]".cyan().to_string(),
-            LineKind::Topup => "  [top-up — met this pay]".dimmed().to_string(),
-            LineKind::Drawdown if line.need > 0 => "  [drawdown — behind pace, no catch-up]"
+        let tail = if line.reserved > 0 {
+            format!("  [debit due — {} not yet cleared]", d(line.reserved))
                 .yellow()
-                .to_string(),
-            LineKind::Drawdown => "  [drawdown — on pace]".dimmed().to_string(),
-            LineKind::Sinking if line.give < line.need => "  <-- short".red().bold().to_string(),
-            LineKind::Sinking if line.current > line.target => {
-                format!("  ahead {}", d(line.current - line.target))
-                    .blue()
-                    .to_string()
+                .to_string()
+        } else {
+            match line.kind {
+                LineKind::Topup if line.need > 0 => "  [top-up — owes this pay]".cyan().to_string(),
+                LineKind::Topup => "  [top-up — met this pay]".dimmed().to_string(),
+                LineKind::Drawdown if line.need > 0 => "  [drawdown — behind pace, no catch-up]"
+                    .yellow()
+                    .to_string(),
+                LineKind::Drawdown => "  [drawdown — on pace]".dimmed().to_string(),
+                LineKind::Sinking if line.give < line.need => {
+                    "  <-- short".red().bold().to_string()
+                }
+                LineKind::Sinking if line.current > line.target => {
+                    format!("  ahead {}", d(line.current - line.target))
+                        .blue()
+                        .to_string()
+                }
+                LineKind::Sinking => String::new(),
             }
-            LineKind::Sinking => String::new(),
         };
         let _ = writeln!(
             out,
@@ -322,6 +333,56 @@ pub async fn assess(cfg: &Config) -> Result<Report, Box<dyn std::error::Error + 
     assess_with(cfg, SimInput::default()).await
 }
 
+/// Milliseconds to stagger the start of each per-pod balance GET. The list
+/// endpoint omits balances, so each pod needs its own call; firing all ~50 at once
+/// stampedes the API — calls fail and were silently read as $0, flip-flopping
+/// funding run to run. Staggering keeps only a handful in flight at a time so the
+/// client's rate limit + retries hold, without the ~30s of going fully serial.
+const BALANCE_STAGGER_MS: u64 = 100;
+
+/// Per-pod balances, each GET started a little after the last so they don't
+/// stampede. Any that still failed are retried once serially (gentlest possible);
+/// a balance we still can't read aborts the run — a money planner must never act
+/// on a pod it couldn't actually read, since a phantom $0 moves real money.
+async fn fetch_balances(
+    client: &sequence_rs::Sequence,
+    pod_ids: &[String],
+) -> Result<HashMap<String, i64>, Box<dyn std::error::Error + Send + Sync>> {
+    let fetched = futures::future::join_all(pod_ids.iter().enumerate().map(|(i, id)| async move {
+        tokio::time::sleep(std::time::Duration::from_millis(
+            i as u64 * BALANCE_STAGGER_MS,
+        ))
+        .await;
+        client.account(id).await
+    }))
+    .await;
+
+    let mut balances = HashMap::new();
+    let mut missing = Vec::new();
+    for (id, res) in pod_ids.iter().zip(fetched) {
+        match res {
+            Ok(a) => {
+                balances.insert(
+                    id.clone(),
+                    a.balance.and_then(|b| b.balance_in_cents).unwrap_or(0),
+                );
+            }
+            Err(_) => missing.push(id),
+        }
+    }
+    for id in missing {
+        let a = client
+            .account(id)
+            .await
+            .map_err(|e| format!("could not read balance for pod {id}: {e}"))?;
+        balances.insert(
+            id.clone(),
+            a.balance.and_then(|b| b.balance_in_cents).unwrap_or(0),
+        );
+    }
+    Ok(balances)
+}
+
 /// `assess` with optional simulation overrides (date + injected deposit). With a
 /// default `SimInput` it's identical to `assess`.
 pub async fn assess_with(
@@ -345,23 +406,14 @@ pub async fn assess_with(
     for a in &page.items {
         names.insert(a.id.clone(), a.name.clone());
     }
-    // pod balances: GET /accounts/{id} per pod, concurrent — serial over ~50 pods was ~30s
+    // pod balances: the list endpoint omits them, so each pod needs its own GET.
     let pod_ids: Vec<String> = page
         .items
         .iter()
         .filter(|a| a.account_type == AccountType::Pod)
         .map(|a| a.id.clone())
         .collect();
-    let fetched = futures::future::join_all(pod_ids.iter().map(|id| client.account(id))).await;
-    let mut balances: HashMap<String, i64> = HashMap::new();
-    for (id, res) in pod_ids.iter().zip(fetched) {
-        if let Ok(acct) = res {
-            balances.insert(
-                id.clone(),
-                acct.balance.and_then(|b| b.balance_in_cents).unwrap_or(0),
-            );
-        }
-    }
+    let mut balances = fetch_balances(&client, &pod_ids).await?;
 
     let assembled = assemble(&page.items, file.as_ref(), cfg.buffer_pct);
 
@@ -424,10 +476,58 @@ pub async fn assess_with(
             .or_insert(0) += sim.deposit_cents;
     }
 
-    // funding map: real balances, contribution pods swapped to their ledger value
+    // Pending-debit reservation: a due-day bill's scheduled debit doesn't land
+    // exactly on the due date — it can slip a few days late (slow ACH/weekend) or
+    // pull several days early (some autopays debit ~5 days ahead). If this cycle's
+    // debit hasn't gone out yet, the pod still holds that money but it's committed —
+    // reserve it so funding/rebalance don't mistake the pod for "full". Only bills
+    // near their due date get the extra outflow fetch, so it stays cheap.
+    const DANGER_DAYS: i64 = 7;
+    // Look back this far from the due date for the debit, to catch autopays that
+    // pull before the due date. Kept well under a cycle so the prior month's debit
+    // isn't counted as this one's.
+    const DEBIT_LEAD_DAYS: i64 = 12;
+    let at_risk: Vec<_> = assembled
+        .budget
+        .categories
+        .iter()
+        .flat_map(|c| &c.bills)
+        .filter_map(|b| {
+            let due = b.due_day?;
+            let d_last = crate::cards::most_recent_due(due, today);
+            ((today - d_last).num_days() <= DANGER_DAYS).then_some((b, d_last))
+        })
+        .collect();
+    // Fetch outflows one pod at a time: the at-risk set is small, and a concurrent
+    // burst trips API rate limits — which, as fetch failures, would skip reservations
+    // unpredictably (run-to-run flip-flop). Serial keeps the result reliable.
+    let mut reserved: HashMap<String, i64> = HashMap::new();
+    for (b, d_last) in &at_risk {
+        let from = format!("{}T00:00:00Z", *d_last - Duration::days(DEBIT_LEAD_DAYS));
+        // A failed fetch (None) means we don't know — don't reserve, lest a transient
+        // API error read as a missing debit. Cap at the real balance: a pod can only
+        // have committed what it actually holds (else need double-counts the bill).
+        let Some(seen) = crate::outflow::outflow_since_cents(&client, &b.pod_id, &from).await
+        else {
+            continue;
+        };
+        let current = balances.get(&b.pod_id).copied().unwrap_or(0);
+        let target = bill_target(b, today, &sched);
+        let unc = crate::cards::reserved_cents(b.amount_cents, seen, current, target);
+        if unc > 0 {
+            reserved.insert(b.pod_id.clone(), unc);
+        }
+    }
+
+    // funding map: real balances, contribution pods swapped to their ledger value,
+    // and any uncleared scheduled debit reserved out (so the plan funds to cover it).
     let mut funding = balances.clone();
     for (pod_id, c) in &contributed {
         funding.insert(pod_id.clone(), *c);
+    }
+    for (pod_id, r) in &reserved {
+        let e = funding.entry(pod_id.clone()).or_insert(0);
+        *e = (*e - r).max(0);
     }
 
     let transfers = plan(&assembled.budget, &funding, today, &sched, strategy);
@@ -437,6 +537,7 @@ pub async fn assess_with(
     for cat in &assembled.budget.categories {
         for bill in &cat.bills {
             let current = balances.get(&bill.pod_id).copied().unwrap_or(0);
+            let reserved_c = reserved.get(&bill.pod_id).copied().unwrap_or(0);
             let give: i64 = transfers
                 .iter()
                 .filter(|t| t.to_pod == bill.pod_id)
@@ -466,7 +567,7 @@ pub async fn assess_with(
                 }
                 _ => {
                     let t = bill_target(bill, today, &sched);
-                    (LineKind::Sinking, t, (t - current).max(0))
+                    (LineKind::Sinking, t, (t - (current - reserved_c)).max(0))
                 }
             };
             lines.push(BillLine {
@@ -477,6 +578,7 @@ pub async fn assess_with(
                 target,
                 need,
                 give,
+                reserved: reserved_c,
                 kind,
             });
         }
@@ -562,6 +664,7 @@ mod tests {
             target,
             need: (target - current).max(0),
             give: 0,
+            reserved: 0,
             kind,
         }
     }
@@ -581,6 +684,16 @@ mod tests {
             executed: false,
             names: HashMap::new(),
         }
+    }
+
+    #[test]
+    fn rebalance_skips_a_pod_whose_debit_hasnt_cleared() {
+        // New-cycle pace is low ($50) and the pod looks overfunded ($600), but that
+        // $600 is last cycle's debit not yet cleared (reserved) → must NOT be skimmed.
+        let mut l = line("carpay", 60_000, 5_000, LineKind::Sinking);
+        l.reserved = 60_000;
+        let plan = rebalance_plan(&report_with(vec![l]));
+        assert!(plan.skims.is_empty(), "reserved pod must not be skimmed");
     }
 
     #[test]
