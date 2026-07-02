@@ -11,5 +11,6 @@ pub mod derive;
 pub mod engine;
 pub mod model;
 pub mod money;
+pub mod outflow;
 pub mod schedule;
 pub mod state;

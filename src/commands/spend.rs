@@ -8,11 +8,9 @@ use chrono::{Duration, Utc};
 use colored::Colorize;
 use sequence_rs::model::account::{AccountSummary, AccountType};
 use sequence_rs::model::transaction::{CardTransactionSubtype, Transaction};
-use sequence_rs::model::transfer::{Transfer, TransferDirection};
+use sequence_rs::model::transfer::{Transfer, TransferDirection, TransferStatus};
 use sequence_rs::prelude::*;
-use sequence_rs::{
-    ListAccountTransfersParams, ListAccountsParams, ListCardTransactionsParams, Sequence,
-};
+use sequence_rs::ListAccountsParams;
 
 use crate::cards::{
     ach_outflow_cents, declared_monthly_cents, monthly_run_rate_cents, native_from_monthly_cents,
@@ -21,6 +19,7 @@ use crate::cards::{
 use crate::config::Config;
 use crate::derive::{self, Frequency, Parsed};
 use crate::money::dollars;
+use crate::outflow::{fetch_ach, fetch_card};
 
 /// One outflow row, normalized across card + ACH for display.
 struct Entry {
@@ -29,6 +28,8 @@ struct Entry {
     cents: i64,
     label: String,
     channel: &'static str,
+    /// Only `Complete` rows count toward the totals; others are shown but flagged.
+    status: TransferStatus,
 }
 
 /// A pod's spend over the window, split by channel.
@@ -73,8 +74,8 @@ pub async fn run(
         let from = from.clone();
         async move {
             (
-                fetch_card(cref, &pod_id, &from).await,
-                fetch_ach(cref, &pod_id, &from).await,
+                fetch_card(cref, &pod_id, &from).await.unwrap_or_default(),
+                fetch_ach(cref, &pod_id, &from).await.unwrap_or_default(),
             )
         }
     }))
@@ -118,6 +119,7 @@ fn build(pod: &AccountSummary, card: Vec<Transaction>, ach: Vec<Transfer>) -> Po
             },
             label: label.to_string(),
             channel: "card",
+            status: t.status,
         });
     }
     for t in &ach {
@@ -131,6 +133,7 @@ fn build(pod: &AccountSummary, card: Vec<Transaction>, ach: Vec<Transfer>) -> Po
             cents: t.amount_in_cents,
             label: label.to_string(),
             channel: "ACH",
+            status: t.status,
         });
     }
     entries.sort_by(|a, b| b.date.cmp(&a.date));
@@ -140,59 +143,6 @@ fn build(pod: &AccountSummary, card: Vec<Transaction>, ach: Vec<Transfer>) -> Po
         ach_cents,
         entries,
     }
-}
-
-async fn fetch_card(client: &Sequence, pod_id: &str, from: &str) -> Vec<Transaction> {
-    let id = pod_id.to_string();
-    let mut all = Vec::new();
-    let mut p = 1u32;
-    loop {
-        let params = ListCardTransactionsParams {
-            from: Some(from.to_string()),
-            page: Some(p),
-            page_size: Some(100),
-            ..Default::default()
-        };
-        match client.card_transactions(&id, &params).await {
-            Ok(r) => {
-                let more = r.pagination.has_next_page && !r.items.is_empty();
-                all.extend(r.items);
-                if !more {
-                    break;
-                }
-                p += 1;
-            }
-            Err(_) => break,
-        }
-    }
-    all
-}
-
-async fn fetch_ach(client: &Sequence, pod_id: &str, from: &str) -> Vec<Transfer> {
-    let id = pod_id.to_string();
-    let mut all = Vec::new();
-    let mut p = 1u32;
-    loop {
-        let params = ListAccountTransfersParams {
-            direction: Some(TransferDirection::MoneyOut),
-            from: Some(from.to_string()),
-            page: Some(p),
-            page_size: Some(100),
-            ..Default::default()
-        };
-        match client.account_transfers(&id, &params).await {
-            Ok(r) => {
-                let more = r.pagination.has_next_page && !r.items.is_empty();
-                all.extend(r.items);
-                if !more {
-                    break;
-                }
-                p += 1;
-            }
-            Err(_) => break,
-        }
-    }
-    all
 }
 
 fn report_spend(spends: &[PodSpend], days: u32) {
@@ -214,7 +164,14 @@ fn report_spend(spends: &[PodSpend], days: u32) {
             } else {
                 ("card  ".normal(), amt.normal())
             };
-            println!("  {}  {tag} {amt_c}  {}", e.date.dimmed(), e.label);
+            let st = if e.status == TransferStatus::Complete {
+                String::new()
+            } else {
+                format!("  [{:?} — not counted]", e.status)
+                    .red()
+                    .to_string()
+            };
+            println!("  {}  {tag} {amt_c}  {}{st}", e.date.dimmed(), e.label);
         }
         if s.entries.len() > 15 {
             println!("  … {} more", s.entries.len() - 15);

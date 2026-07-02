@@ -4,15 +4,18 @@
 //! Pure (no I/O) so the money math is unit-tested here; fetching lives in
 //! `commands::spend`.
 
+use chrono::{Datelike, NaiveDate};
 use sequence_rs::model::transaction::Transaction;
-use sequence_rs::model::transfer::{Transfer, TransferDirection};
+use sequence_rs::model::transfer::{Transfer, TransferDirection, TransferStatus};
 
 use crate::derive::Frequency;
 
-/// Net CARD spend in cents: purchases (`MONEY_OUT`) minus refunds (`MONEY_IN`).
-/// Negative in a refund-heavy window.
+/// Net CARD spend in cents from *completed* transactions: purchases (`MONEY_OUT`)
+/// minus refunds (`MONEY_IN`). Pending/declined/failed don't count — money that
+/// didn't actually move. Negative in a refund-heavy window.
 pub fn net_spend_cents(txns: &[Transaction]) -> i64 {
     txns.iter()
+        .filter(|t| t.status == TransferStatus::Complete)
         .map(|t| match t.direction {
             TransferDirection::MoneyOut => t.amount_in_cents,
             _ => -t.amount_in_cents,
@@ -20,13 +23,17 @@ pub fn net_spend_cents(txns: &[Transaction]) -> i64 {
         .sum()
 }
 
-/// Total external ACH/transfer outflow in cents: transfers leaving the pod to the
-/// outside world (`MONEY_OUT`). Excludes inter-pod (`INTERNAL`) moves and inflows —
-/// money shuffled between pods isn't spend.
+/// Total external ACH/transfer outflow in cents from *completed* transfers leaving
+/// the pod to the outside world (`MONEY_OUT`). Excludes inter-pod (`INTERNAL`) moves
+/// and inflows, and crucially anything not `Complete` — a bounced/returned/pending
+/// payment never left the pod, so counting it would overstate spend and fool the
+/// debit-cleared check into thinking a bill was paid when it failed.
 pub fn ach_outflow_cents(transfers: &[Transfer]) -> i64 {
     transfers
         .iter()
-        .filter(|t| t.direction == TransferDirection::MoneyOut)
+        .filter(|t| {
+            t.direction == TransferDirection::MoneyOut && t.status == TransferStatus::Complete
+        })
         .map(|t| t.amount_in_cents)
         .sum()
 }
@@ -76,10 +83,58 @@ pub fn round_up_to_dollar(cents: i64) -> i64 {
     ((cents + 99) / 100) * 100
 }
 
+/// The most recent occurrence of `due_day` (1–31, clamped to the month's length;
+/// `31` ⇒ last day) on or before `today`.
+pub fn most_recent_due(due_day: u32, today: NaiveDate) -> NaiveDate {
+    let on = |y: i32, m: u32| {
+        let last = last_day_of_month(y, m);
+        NaiveDate::from_ymd_opt(y, m, due_day.min(last)).unwrap()
+    };
+    let this_month = on(today.year(), today.month());
+    if this_month <= today {
+        this_month
+    } else if today.month() == 1 {
+        on(today.year() - 1, 12)
+    } else {
+        on(today.year(), today.month() - 1)
+    }
+}
+
+fn last_day_of_month(y: i32, m: u32) -> u32 {
+    let (ny, nm) = if m == 12 { (y + 1, 1) } else { (y, m + 1) };
+    NaiveDate::from_ymd_opt(ny, nm, 1)
+        .unwrap()
+        .pred_opt()
+        .unwrap()
+        .day()
+}
+
+/// Cents of a bill's scheduled debit not yet cleared this cycle, given how much
+/// has actually gone out since the due date. If at least half the bill has left,
+/// treat the debit as cleared (0); otherwise reserve the remainder so the pod
+/// isn't mistaken for "full" before a slow/weekend debit hits.
+pub fn uncleared_debit_cents(bill_amount: i64, seen_outflow: i64) -> i64 {
+    if seen_outflow * 2 >= bill_amount {
+        0
+    } else {
+        (bill_amount - seen_outflow).max(0)
+    }
+}
+
+/// Cents to actually reserve in a pod: the uncleared debit, but only the balance
+/// held ABOVE the current paced `target`. Money up to the target is what this cycle
+/// is supposed to hold for the bill — counting it as committed would double the
+/// demand (target + reservation) and, on the due date itself, make the pod ask to
+/// be funded twice over. Only the surplus is a just-rolled cycle's payment still
+/// sitting there before its debit clears.
+pub fn reserved_cents(bill_amount: i64, seen_outflow: i64, balance: i64, target: i64) -> i64 {
+    let surplus = (balance - target).max(0);
+    uncleared_debit_cents(bill_amount, seen_outflow).min(surplus)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::NaiveDate;
     use sequence_rs::model::transaction::{CardTransactionSubtype, CardType};
     use sequence_rs::model::transfer::{
         TransferAccountRef, TransferOrigin, TransferParticipantType, TransferStatus,
@@ -146,6 +201,24 @@ mod tests {
     }
 
     #[test]
+    fn outflow_excludes_failed_or_pending() {
+        // a bounced ACH: attempted but never settled — must not count as spend OR
+        // as the debit clearing (a retry often lands higher, with a return fee)
+        let mut bounced = transfer(40_000, TransferDirection::MoneyOut);
+        bounced.status = TransferStatus::Error;
+        let settled = transfer(41_000, TransferDirection::MoneyOut); // Complete
+        assert_eq!(ach_outflow_cents(&[bounced, settled]), 41_000);
+
+        let mut pending = txn(
+            5_000,
+            TransferDirection::MoneyOut,
+            CardTransactionSubtype::Purchase,
+        );
+        pending.status = TransferStatus::Pending;
+        assert_eq!(net_spend_cents(&[pending]), 0);
+    }
+
+    #[test]
     fn ach_outflow_counts_only_external_money_out() {
         let ts = vec![
             transfer(50_000, TransferDirection::MoneyOut), // external payment
@@ -208,5 +281,48 @@ mod tests {
         assert_eq!(round_up_to_dollar(58952), 59000); // $589.52 -> $590.00
         assert_eq!(round_up_to_dollar(2869), 2900); // $28.69 -> $29.00
         assert_eq!(round_up_to_dollar(59000), 59000); // already whole
+    }
+
+    #[test]
+    fn most_recent_due_this_or_last_month() {
+        let jun15 = NaiveDate::from_ymd_opt(2026, 6, 15).unwrap();
+        // due 10th already passed this month
+        assert_eq!(
+            most_recent_due(10, jun15),
+            NaiveDate::from_ymd_opt(2026, 6, 10).unwrap()
+        );
+        // due 20th not yet this month -> last month's 20th
+        assert_eq!(
+            most_recent_due(20, jun15),
+            NaiveDate::from_ymd_opt(2026, 5, 20).unwrap()
+        );
+        // due 31 in a 30-day month clamps to the last day
+        let jul1 = NaiveDate::from_ymd_opt(2026, 7, 1).unwrap();
+        assert_eq!(
+            most_recent_due(31, jul1),
+            NaiveDate::from_ymd_opt(2026, 6, 30).unwrap()
+        );
+    }
+
+    #[test]
+    fn uncleared_reserves_until_debit_seen() {
+        assert_eq!(uncleared_debit_cents(50_000, 0), 50_000); // nothing out -> reserve all
+        assert_eq!(uncleared_debit_cents(50_000, 25_000), 0); // half out -> cleared
+        assert_eq!(uncleared_debit_cents(50_000, 49_000), 0); // fully out -> cleared
+        assert_eq!(uncleared_debit_cents(50_000, 10_000), 40_000); // partial -> reserve rest
+    }
+
+    #[test]
+    fn reserved_only_covers_surplus_over_target() {
+        // money up to the target is this cycle's — not reserved (else need doubles)
+        assert_eq!(reserved_cents(50_000, 0, 50_000, 50_000), 0); // at target (due day)
+        assert_eq!(reserved_cents(50_000, 0, 45_000, 50_000), 0); // below target
+                                                                  // surplus above a low (just-rolled) target is the pending debit -> reserve it
+        assert_eq!(reserved_cents(50_000, 0, 50_000, 0), 50_000);
+        assert_eq!(reserved_cents(50_000, 0, 50_000, 8_000), 42_000);
+        // debit already cleared (>= half seen) -> nothing, regardless of surplus
+        assert_eq!(reserved_cents(50_000, 49_000, 50_000, 0), 0);
+        // empty pod -> nothing to reserve
+        assert_eq!(reserved_cents(50_000, 0, 0, 0), 0);
     }
 }
