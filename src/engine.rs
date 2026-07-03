@@ -357,6 +357,19 @@ pub async fn assess_with(
 
     let assembled = assemble(&accounts, file.as_ref(), cfg.buffer_pct);
 
+    // Config drift: the engine reads names, rules, and money every cycle — it
+    // notices when they disagree instead of waiting for a human to cross-check.
+    // (Every class of drift here has caused a real bounce.) A failed rules read
+    // degrades to a warning; funding still runs on the declared model.
+    let mut warnings = assembled.warnings.clone();
+    match crate::fetch::rules_detailed(&client).await {
+        Ok(rules) => {
+            let flows = crate::budget::flows_from_rules(&rules);
+            warnings.extend(crate::budget::drift_warnings(&accounts, &flows));
+        }
+        Err(e) => warnings.push(format!("rules unreadable — config drift not checked ({e})")),
+    }
+
     // Drawdown notes: how far behind pace each drawdown pod is — never auto-catches-up
     let mut notes = Vec::new();
     for bill in assembled.budget.categories.iter().flat_map(|c| &c.bills) {
@@ -542,7 +555,7 @@ pub async fn assess_with(
         migrate: assembled.migrate,
         ignored: assembled.ignored,
         notes,
-        warnings: assembled.warnings,
+        warnings,
         executed: false,
         names,
     })

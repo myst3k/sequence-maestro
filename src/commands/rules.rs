@@ -5,14 +5,11 @@
 use std::collections::HashMap;
 
 use crate::config::Config;
+use crate::money::dollars as money;
 use sequence_rs::model::account::AccountNode;
 use sequence_rs::model::rule::{
     PercentageTarget, RuleAction, RuleActionKind, TransferCapPeriod, Trigger,
 };
-use sequence_rs::prelude::*;
-use sequence_rs::ListRulesParams;
-
-use crate::money::dollars as money;
 
 fn cap_period(p: &TransferCapPeriod) -> &'static str {
     match p {
@@ -83,29 +80,11 @@ pub async fn run(
         .map(|a| (a.id.clone(), a.name.clone()))
         .collect();
 
-    let list = client
-        .rules(&ListRulesParams {
-            page_size: Some(100),
-            ..Default::default()
-        })
-        .await?;
+    let details = crate::fetch::rules_detailed(&client).await?;
     let needle = filter.map(|s| s.to_lowercase());
 
-    // Each supported rule's full detail, fetched serially: it's a handful of GETs,
-    // and a listing with silently dropped rules reads as "that rule doesn't exist".
-    let supported: Vec<_> = list.items.iter().filter(|s| s.is_supported).collect();
-    let mut details = Vec::with_capacity(supported.len());
-    for s in &supported {
-        details.push(
-            client
-                .rule(&s.id)
-                .await
-                .map_err(|e| format!("could not read rule {}: {e}", s.id))?,
-        );
-    }
-
-    for (summary, rule) in supported.iter().zip(details) {
-        let name_hit = summary
+    for rule in &details {
+        let name_hit = rule
             .name
             .as_deref()
             .map(|n| n.to_lowercase())

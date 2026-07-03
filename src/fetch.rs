@@ -8,13 +8,15 @@ use std::collections::HashMap;
 use chrono::NaiveDate;
 use futures::TryStreamExt;
 use sequence_rs::model::account::{Account, AccountSummary};
+use sequence_rs::model::rule::Rule;
 use sequence_rs::model::transaction::Transaction;
 use sequence_rs::model::transfer::{
     CreateTransferRequest, Transfer, TransferDirection, TransferStatus,
 };
 use sequence_rs::prelude::*;
 use sequence_rs::{
-    ListAccountTransfersParams, ListAccountsParams, ListCardTransactionsParams, Sequence,
+    ListAccountTransfersParams, ListAccountsParams, ListCardTransactionsParams, ListRulesParams,
+    Sequence,
 };
 
 use crate::cards::{ach_outflow_cents, net_spend_cents};
@@ -150,6 +152,28 @@ pub async fn outgoing_transfers_since(
         },
     )
     .await
+}
+
+/// Every supported rule with full detail (enabled and disabled), fetched
+/// serially: it's a handful of GETs, and a silently dropped rule would read as
+/// "that rule doesn't exist".
+pub async fn rules_detailed(client: &Sequence) -> Result<Vec<Rule>, Error> {
+    let list = client
+        .rules(&ListRulesParams {
+            page_size: Some(100),
+            ..Default::default()
+        })
+        .await?;
+    let mut out = Vec::new();
+    for s in list.items.iter().filter(|s| s.is_supported) {
+        out.push(
+            client
+                .rule(&s.id)
+                .await
+                .map_err(|e| format!("could not read rule {}: {e}", s.id))?,
+        );
+    }
+    Ok(out)
 }
 
 /// The ONLY money-moving call in maestro: one transfer, `from` → `to`. The

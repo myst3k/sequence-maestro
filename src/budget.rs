@@ -5,9 +5,11 @@
 use std::collections::BTreeMap;
 
 use sequence_rs::model::account::{AccountSummary, AccountType};
+use sequence_rs::model::rule::{Rule, RuleActionKind, RuleStatus};
 
-use crate::derive::{is_group_marker, parse, parse_scheme, DueDay, Frequency, Parsed};
+use crate::derive::{declared, is_group_marker, parse, parse_scheme, DueDay, Frequency, Parsed};
 use crate::model::{Bill, Budget, Category};
+use crate::money::dollars;
 use crate::state::State;
 
 /// Add the safety buffer to a bill's amount — except contributions (`Paycheck`),
@@ -154,6 +156,115 @@ pub fn assemble(accounts: &[AccountSummary], file: Option<&State>, buffer_pct: f
     }
 }
 
+/// One money-moving edge extracted from an ENABLED Sequence rule: source pod →
+/// destination pod, what it tops up to (or moves), and its per-transfer cap.
+pub struct Flow {
+    pub src: String,
+    pub dst: String,
+    /// The top-up target or fixed amount, when the action declares one.
+    pub target_cents: Option<i64>,
+    /// Per-transfer cap, when set.
+    pub cap_cents: Option<i64>,
+}
+
+/// Flatten enabled rules into the flows the drift checks reason about.
+pub fn flows_from_rules(rules: &[Rule]) -> Vec<Flow> {
+    let mut out = Vec::new();
+    for r in rules {
+        if r.status != RuleStatus::Enabled {
+            continue;
+        }
+        for step in &r.steps {
+            for a in &step.actions {
+                let target = match &a.kind {
+                    RuleActionKind::Fixed { amount_in_cents } => Some(*amount_in_cents),
+                    RuleActionKind::TopUp {
+                        amount_in_cents, ..
+                    } => *amount_in_cents,
+                    _ => None,
+                };
+                out.push(Flow {
+                    src: a.base.source.id.clone(),
+                    dst: a.base.destination.id.clone(),
+                    target_cents: target,
+                    cap_cents: a.base.limit.as_ref().map(|c| c.amount_in_cents),
+                });
+            }
+        }
+    }
+    out
+}
+
+/// Config drift: where the pod names (the declared budget) and the enabled rules
+/// (what actually moves money while maestro is in Shadow) disagree. Every drift
+/// found here has caused a real bounce or an unfunded bill: a rule topping up
+/// below the declared amount, a bill pod nothing funds, and a group whose income
+/// pull is smaller than the sum its bills can draw.
+pub fn drift_warnings(accounts: &[AccountSummary], flows: &[Flow]) -> Vec<String> {
+    let mut out = Vec::new();
+    for a in accounts {
+        if a.account_type != AccountType::Pod {
+            continue;
+        }
+        // Group pods: income must pull at least what the group's bills can draw.
+        if is_group_marker(&a.name) {
+            let demand: i64 = flows
+                .iter()
+                .filter(|f| f.src == a.id)
+                .map(|f| f.cap_cents.or(f.target_cents).unwrap_or(0))
+                .sum();
+            let pull = flows
+                .iter()
+                .filter(|f| f.dst == a.id)
+                .filter_map(|f| f.target_cents)
+                .max();
+            match pull {
+                None if demand > 0 => out.push(format!(
+                    "{}: no enabled rule pulls into this group — its bills won't fund",
+                    a.name
+                )),
+                Some(p) if p < demand => out.push(format!(
+                    "{}: pulls {} from income, but its bills can draw up to {} per cycle — starved by {}",
+                    a.name,
+                    dollars(p),
+                    dollars(demand),
+                    dollars(demand - p)
+                )),
+                _ => {}
+            }
+            continue;
+        }
+        // Bill pods: something must fund them, and to at least the declared amount.
+        let Some((name, amount, freq)) = declared(&a.name) else {
+            continue; // not a bill (pool, savings, spending, …)
+        };
+        let targeting: Vec<&Flow> = flows.iter().filter(|f| f.dst == a.id).collect();
+        if targeting.is_empty() {
+            out.push(format!(
+                "{name}: no enabled rule funds this pod — it will sit empty"
+            ));
+            continue;
+        }
+        // Per-paycheck top-ups declare a cap (rule targets differ by design) and
+        // drawdowns fund by fixed slice — only fixed-amount bills compare directly.
+        if matches!(
+            freq,
+            Frequency::Month | Frequency::Quarter | Frequency::Year
+        ) {
+            if let Some(max_t) = targeting.iter().filter_map(|f| f.target_cents).max() {
+                if max_t < amount {
+                    out.push(format!(
+                        "{name}: rule tops up to {} but the pod declares {} — the rule will underfund it",
+                        dollars(max_t),
+                        dollars(amount)
+                    ));
+                }
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -172,5 +283,75 @@ mod tests {
     fn contributions_get_no_buffer() {
         // A per-paycheck contribution is a chosen amount, not a bill to over-cover.
         assert_eq!(buffered(50_000, &Frequency::Paycheck, 2.5), 50_000);
+    }
+
+    fn pod(id: &str, name: &str) -> AccountSummary {
+        AccountSummary {
+            id: id.into(),
+            name: name.into(),
+            account_type: AccountType::Pod,
+            description: None,
+            external_account_type: None,
+            beneficiary_name: None,
+            institution_name: None,
+            can_be_source: true,
+            created_at: String::new(),
+            updated_at: String::new(),
+            deleted_at: None,
+        }
+    }
+
+    fn flow(src: &str, dst: &str, target: Option<i64>, cap: Option<i64>) -> Flow {
+        Flow {
+            src: src.into(),
+            dst: dst.into(),
+            target_cents: target,
+            cap_cents: cap,
+        }
+    }
+
+    // Amounts use dollar_cents grouping (`50_00` = $50.00) for readability.
+    #[allow(clippy::inconsistent_digit_grouping)]
+    #[test]
+    fn drift_flags_underfunding_rule_orphan_bill_and_starved_group() {
+        let accounts = vec![
+            pod("g1", "G: Home"),
+            pod("p1", "Home / Web / 40 / 24"), // rule below declared
+            pod("p2", "Home / Water / 30 / 5"), // no rule at all
+        ];
+        let flows = vec![
+            flow("pool", "g1", Some(50_00), None),      // group pulls $50…
+            flow("g1", "p1", Some(39_00), Some(20_00)), // …bill can draw cap $20
+            flow("g1", "px", Some(45_00), Some(45_00)), // …other bill draws $45 -> demand $65
+        ];
+        let w = drift_warnings(&accounts, &flows);
+        assert_eq!(w.len(), 3, "{w:?}");
+        assert!(w.iter().any(|s| s.contains("starved by $15.00")), "{w:?}");
+        assert!(
+            w.iter()
+                .any(|s| s.contains("Web") && s.contains("underfund")),
+            "{w:?}"
+        );
+        assert!(
+            w.iter()
+                .any(|s| s.contains("Water") && s.contains("no enabled rule funds")),
+            "{w:?}"
+        );
+    }
+
+    #[allow(clippy::inconsistent_digit_grouping)]
+    #[test]
+    fn drift_is_silent_when_names_and_rules_agree() {
+        let accounts = vec![
+            pod("g1", "G: Home"),
+            pod("p1", "Home / Web / 40 / 24"),
+            pod("p3", "Home / Cell / 25 / paycheck"), // cap semantics: presence is enough
+        ];
+        let flows = vec![
+            flow("pool", "g1", Some(60_00), None),
+            flow("g1", "p1", Some(40_00), Some(20_00)),
+            flow("g1", "p3", Some(100_00), Some(40_00)),
+        ];
+        assert!(drift_warnings(&accounts, &flows).is_empty());
     }
 }
