@@ -190,12 +190,13 @@ fn report_vs_budget(cfg: &Config, spends: &[PodSpend], days: u32) {
     );
     for s in spends {
         let actual_m = monthly_run_rate_cents(s.total(), days as i64);
-        match derive::declared(&s.pod.name) {
-            Some((name, amt, freq)) => {
-                // A `topup` pod's declared amount is a per-paycheck CAP (the top-up
-                // is gap-aware, funding only up to it), not a fixed bill — so spending
-                // under it is normal headroom, and "set the amount to X" doesn't apply.
-                let is_cap = matches!(freq, Frequency::Paycheck);
+        match derive::derive_bill(&s.pod.name) {
+            Some(b) => {
+                let (name, amt, freq) = (b.name, b.amount_cents, b.frequency);
+                // A `topup` pod's amount is a per-paycheck CAP and a `keep` pod's is
+                // a level to refill to — not fixed bills, so spending under them is
+                // normal headroom, and "set the amount to X" doesn't apply.
+                let is_cap = matches!(freq, Frequency::Paycheck | Frequency::Keep);
                 let decl_m = declared_monthly_cents(amt, &freq, ppm);
                 let drift = actual_m - decl_m;
                 let drift_s = format!("{:>10}", dollars(drift));

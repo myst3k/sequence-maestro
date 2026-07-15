@@ -80,11 +80,12 @@ Each bill is a pod whose name follows this grammar:
 | `Name` | the bill's name — an inner `/` must have **no** surrounding spaces |
 | `Amount` | dollars: `600` or `134.50`, no `$` |
 | `DueDay` | `1`–`31`, or `last` for end of month |
-| `Frequency` | `month` (default), `quarter`, `year`, or `topup` — aliases like `monthly` / `yearly` / `annual` accepted |
+| `Frequency` | `month` (default), `quarter`, `year`, `topup`, or `keep` — aliases like `monthly` / `yearly` / `annual` / `refill` accepted |
 
 The delimiter is `" / "` (space-slash-space), so a name like `Water/Trash` stays one field.
 
 - **`topup`** tops the pod up to `Amount` each paycheck, measured from the ledger (deposits since the last payday) — for pods that get spent down, so it won't refill spending or double-fund.
+- **`keep`** (`Misc / Game Credit / 25 / keep`) holds a flat level: when spending dips the pod below `Amount`, the next cycle refills the gap. Never skimmed by `rebalance`, and no scheduled debit is expected — for prepaid balances and spend-and-refill pods.
 - **`drawdown`** (`Health / Dentist / 600 / drawdown / 2026-09-15 / 6mo`) saves a flat slice each paycheck toward a dated lump, then rolls the date forward by the period (`mo` / `y`).
 - Pods that don't match the grammar — savings, debt-routing, the income pool — are **ignored** by the funding logic.
 
@@ -96,6 +97,7 @@ Housing / Rent / 2000 / 1                      # $2,000 due the 1st, in "Housing
 Memberships / Warehouse Club / 60 / 10 / year  # $60 once a year, due the 10th, in "Memberships"
 Utilities / Electric / 100 / last              # $100 due the last day of the month, in "Utilities"
 Allowance / 200 / month                        # $200/month — no group (funded from the pool), no due day (spread evenly)
+Misc / Game Credit / 25 / keep                 # hold $25 on hand; refill whatever gets spent
 ```
 
 ## How funding works

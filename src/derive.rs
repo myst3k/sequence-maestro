@@ -120,6 +120,11 @@ pub enum Frequency {
         target: NaiveDate,
         period_months: u32,
     },
+    /// Keep a flat level on hand: the pod targets `amount` at all times, and when
+    /// spending dips it below, the next cycle refills the gap. Never skimmed, and
+    /// no scheduled debit is expected — for prepaid balances and spend-and-refill
+    /// pods. Keyword `keep` (aliases `refill` / `float`).
+    Keep,
 }
 
 /// Parse a calendar period like `6mo`, `3m`, `1y`, `1y6mo` into total months.
@@ -186,24 +191,7 @@ fn parse_freq(s: &str) -> Option<Frequency> {
         "quarter" | "quarterly" => Some(Frequency::Quarter),
         "year" | "yearly" | "annual" | "annually" => Some(Frequency::Year),
         "topup" | "paycheck-topup" | "paycheck" | "payday" => Some(Frequency::Paycheck),
-        _ => None,
-    }
-}
-
-/// A pod's declared bill facts — name, amount, frequency — new scheme first,
-/// falling back to the old `Name ($X) - day` naming. `None` for non-bill pods.
-/// The one fallback chain every "what does this pod declare?" consumer shares.
-pub fn declared(pod_name: &str) -> Option<(String, i64, Frequency)> {
-    if let Some(b) = parse_scheme(pod_name) {
-        return Some((b.name, b.amount_cents, b.frequency));
-    }
-    match parse(pod_name) {
-        Parsed::Bill {
-            name, amount_cents, ..
-        }
-        | Parsed::BillNoDueDay { name, amount_cents } => {
-            Some((name, amount_cents, Frequency::Month))
-        }
+        "keep" | "refill" | "float" => Some(Frequency::Keep),
         _ => None,
     }
 }
@@ -278,7 +266,9 @@ pub struct DerivedBill {
     pub frequency: Frequency,
 }
 
-/// Unify both schemes into one bill, or None if the pod isn't a bill.
+/// Unify both schemes into one bill, or None if the pod isn't a bill. The one
+/// fallback chain every "what does this pod declare?" consumer shares. (An
+/// old-scheme bill missing its due day derives with `due_day: None`.)
 pub fn derive_bill(pod_name: &str) -> Option<DerivedBill> {
     if let Some(b) = parse_scheme(pod_name) {
         let due_day = b.due_day.map(|d| match d {
@@ -303,6 +293,13 @@ pub fn derive_bill(pod_name: &str) -> Option<DerivedBill> {
             name,
             amount_cents,
             due_day: Some(due_day),
+            frequency: Frequency::Month,
+        }),
+        Parsed::BillNoDueDay { name, amount_cents } => Some(DerivedBill {
+            group: None,
+            name,
+            amount_cents,
+            due_day: None,
             frequency: Frequency::Month,
         }),
         _ => None,
@@ -350,6 +347,16 @@ mod tests {
                 .due_day,
             None
         );
+    }
+
+    #[test]
+    fn keep_parses_with_aliases() {
+        for kw in ["keep", "refill", "float"] {
+            let b = parse_scheme(&format!("Misc / Game Credit / 25 / {kw}")).unwrap();
+            assert_eq!(b.frequency, Frequency::Keep);
+            assert_eq!(b.due_day, None);
+            assert_eq!(b.amount_cents, 2_500);
+        }
     }
 
     #[test]

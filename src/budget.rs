@@ -7,15 +7,16 @@ use std::collections::BTreeMap;
 use sequence_rs::model::account::{AccountSummary, AccountType};
 use sequence_rs::model::rule::{Rule, RuleActionKind, RuleStatus};
 
-use crate::derive::{declared, is_group_marker, parse, parse_scheme, DueDay, Frequency, Parsed};
+use crate::derive::{derive_bill, is_group_marker, parse, parse_scheme, DueDay, Frequency, Parsed};
 use crate::model::{Bill, Budget, Category};
 use crate::money::dollars;
 use crate::state::State;
 
-/// Add the safety buffer to a bill's amount — except contributions (`Paycheck`),
-/// which are a chosen amount, not a bill to over-cover. Rounds up to the cent.
+/// Add the safety buffer to a bill's amount — except per-paycheck contributions
+/// and kept levels, which are chosen amounts, not bills to over-cover. Rounds up
+/// to the cent.
 fn buffered(amount: i64, freq: &Frequency, pct: f64) -> i64 {
-    if matches!(freq, Frequency::Paycheck) {
+    if matches!(freq, Frequency::Paycheck | Frequency::Keep) {
         amount
     } else {
         (amount as f64 * (1.0 + pct / 100.0)).ceil() as i64
@@ -235,9 +236,10 @@ pub fn drift_warnings(accounts: &[AccountSummary], flows: &[Flow]) -> Vec<String
             continue;
         }
         // Bill pods: something must fund them, and to at least the declared amount.
-        let Some((name, amount, freq)) = declared(&a.name) else {
+        let Some(bill) = derive_bill(&a.name) else {
             continue; // not a bill (pool, savings, spending, …)
         };
+        let (name, amount, freq) = (bill.name, bill.amount_cents, bill.frequency);
         let targeting: Vec<&Flow> = flows.iter().filter(|f| f.dst == a.id).collect();
         if targeting.is_empty() {
             out.push(format!(
@@ -246,10 +248,11 @@ pub fn drift_warnings(accounts: &[AccountSummary], flows: &[Flow]) -> Vec<String
             continue;
         }
         // Per-paycheck top-ups declare a cap (rule targets differ by design) and
-        // drawdowns fund by fixed slice — only fixed-amount bills compare directly.
+        // drawdowns fund by fixed slice — fixed-amount bills and kept levels
+        // compare against the rule target directly.
         if matches!(
             freq,
-            Frequency::Month | Frequency::Quarter | Frequency::Year
+            Frequency::Month | Frequency::Quarter | Frequency::Year | Frequency::Keep
         ) {
             if let Some(max_t) = targeting.iter().filter_map(|f| f.target_cents).max() {
                 if max_t < amount {
