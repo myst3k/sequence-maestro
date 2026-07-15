@@ -196,7 +196,7 @@ fn report_vs_budget(cfg: &Config, spends: &[PodSpend], days: u32) {
                 // A `topup` pod's amount is a per-paycheck CAP and a `keep` pod's is
                 // a level to refill to — not fixed bills, so spending under them is
                 // normal headroom, and "set the amount to X" doesn't apply.
-                let is_cap = matches!(freq, Frequency::Paycheck | Frequency::Keep);
+                let is_cap = matches!(freq, Frequency::Paycheck | Frequency::Hold);
                 let decl_m = declared_monthly_cents(amt, &freq, ppm);
                 let drift = actual_m - decl_m;
                 let drift_s = format!("{:>10}", dollars(drift));

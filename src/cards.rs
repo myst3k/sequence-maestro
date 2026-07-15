@@ -58,7 +58,7 @@ pub fn declared_monthly_cents(amount_cents: i64, freq: &Frequency, paydays_per_m
         Frequency::Drawdown { .. } => amount_cents,
         Frequency::Paycheck => amount_cents * paydays_per_month.max(1),
         // a kept level refills at most its own amount in a month
-        Frequency::Keep => amount_cents,
+        Frequency::Hold => amount_cents,
     }
 }
 
@@ -75,7 +75,7 @@ pub fn native_from_monthly_cents(
         Frequency::Year => monthly_cents * 12,
         Frequency::Drawdown { period_months, .. } => monthly_cents * *period_months as i64,
         Frequency::Paycheck => monthly_cents / paydays_per_month.max(1),
-        Frequency::Keep => monthly_cents,
+        Frequency::Hold => monthly_cents,
     }
 }
 

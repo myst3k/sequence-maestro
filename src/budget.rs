@@ -16,7 +16,7 @@ use crate::state::State;
 /// and kept levels, which are chosen amounts, not bills to over-cover. Rounds up
 /// to the cent.
 fn buffered(amount: i64, freq: &Frequency, pct: f64) -> i64 {
-    if matches!(freq, Frequency::Paycheck | Frequency::Keep) {
+    if matches!(freq, Frequency::Paycheck | Frequency::Hold) {
         amount
     } else {
         (amount as f64 * (1.0 + pct / 100.0)).ceil() as i64
@@ -252,7 +252,7 @@ pub fn drift_warnings(accounts: &[AccountSummary], flows: &[Flow]) -> Vec<String
         // compare against the rule target directly.
         if matches!(
             freq,
-            Frequency::Month | Frequency::Quarter | Frequency::Year | Frequency::Keep
+            Frequency::Month | Frequency::Quarter | Frequency::Year | Frequency::Hold
         ) {
             if let Some(max_t) = targeting.iter().filter_map(|f| f.target_cents).max() {
                 if max_t < amount {

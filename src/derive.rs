@@ -120,11 +120,11 @@ pub enum Frequency {
         target: NaiveDate,
         period_months: u32,
     },
-    /// Keep a flat level on hand: the pod targets `amount` at all times, and when
+    /// Hold a flat level on hand: the pod targets `amount` at all times, and when
     /// spending dips it below, the next cycle refills the gap. Never skimmed, and
     /// no scheduled debit is expected — for prepaid balances and spend-and-refill
-    /// pods. Keyword `keep` (aliases `refill` / `float`).
-    Keep,
+    /// pods. Keyword `hold` (aliases `keep` / `refill` / `float`).
+    Hold,
 }
 
 /// Parse a calendar period like `6mo`, `3m`, `1y`, `1y6mo` into total months.
@@ -191,7 +191,7 @@ fn parse_freq(s: &str) -> Option<Frequency> {
         "quarter" | "quarterly" => Some(Frequency::Quarter),
         "year" | "yearly" | "annual" | "annually" => Some(Frequency::Year),
         "topup" | "paycheck-topup" | "paycheck" | "payday" => Some(Frequency::Paycheck),
-        "keep" | "refill" | "float" => Some(Frequency::Keep),
+        "hold" | "keep" | "refill" | "float" => Some(Frequency::Hold),
         _ => None,
     }
 }
@@ -350,10 +350,10 @@ mod tests {
     }
 
     #[test]
-    fn keep_parses_with_aliases() {
-        for kw in ["keep", "refill", "float"] {
+    fn hold_parses_with_aliases() {
+        for kw in ["hold", "keep", "refill", "float"] {
             let b = parse_scheme(&format!("Misc / Game Credit / 25 / {kw}")).unwrap();
-            assert_eq!(b.frequency, Frequency::Keep);
+            assert_eq!(b.frequency, Frequency::Hold);
             assert_eq!(b.due_day, None);
             assert_eq!(b.amount_cents, 2_500);
         }

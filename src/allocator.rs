@@ -64,7 +64,7 @@ pub fn bill_target(bill: &Bill, today: NaiveDate, sched: &PaySchedule) -> i64 {
             // flat per-paycheck amount; satisfied-ness comes from the ledger
             Frequency::Paycheck => bill.amount_cents,
             // flat level — refill to it whenever spending dips the pod below
-            Frequency::Keep => bill.amount_cents,
+            Frequency::Hold => bill.amount_cents,
             Frequency::Drawdown {
                 target,
                 period_months,
@@ -152,7 +152,7 @@ fn sort_due(bill: &Bill, today: NaiveDate) -> NaiveDate {
         None => match &bill.frequency {
             Frequency::Paycheck => today, // due now — fund it this payday
             // no deadline — lowest urgency when rationing (end of month)
-            Frequency::Keep => period_bounds(&Frequency::Month, today).1,
+            Frequency::Hold => period_bounds(&Frequency::Month, today).1,
             Frequency::Drawdown {
                 target,
                 period_months,
@@ -181,7 +181,7 @@ fn period_bounds(freq: &Frequency, today: NaiveDate) -> (NaiveDate, NaiveDate) {
             NaiveDate::from_ymd_opt(today.year(), 12, 31).unwrap(),
         ),
         // Handled directly in bill_target/sort_due, not via calendar periods.
-        Frequency::Paycheck | Frequency::Keep | Frequency::Drawdown { .. } => (today, today),
+        Frequency::Paycheck | Frequency::Hold | Frequency::Drawdown { .. } => (today, today),
     }
 }
 
@@ -376,13 +376,13 @@ mod tests {
     }
 
     #[test]
-    fn keep_pods_target_their_level_flat() {
+    fn hold_pods_target_their_level_flat() {
         let b = Bill {
             name: "stash".into(),
             pod_id: "pod-stash".into(),
             amount_cents: 15_000,
             due_day: None,
-            frequency: Frequency::Keep,
+            frequency: Frequency::Hold,
         };
         // the same flat target on any date — no pacing, no due date
         assert_eq!(target_cents(&b, d(2026, 6, 1), &semi()), 15_000);

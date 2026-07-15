@@ -41,8 +41,8 @@ pub enum LineKind {
     Topup,
     /// Dated lump (drawdown). Income-funded, so `rebalance` leaves it alone.
     Drawdown,
-    /// Flat level kept on hand (`keep`) — refilled by funding, never rebalanced.
-    Keep,
+    /// Flat level held on hand (`hold`) — refilled by funding, never rebalanced.
+    Hold,
 }
 
 /// One bill's demand-vs-funded picture for this cycle.
@@ -179,10 +179,10 @@ pub fn render(report: &Report) -> String {
                     .yellow()
                     .to_string(),
                 LineKind::Drawdown => "  [drawdown — on pace]".dimmed().to_string(),
-                LineKind::Keep if line.need > 0 => {
-                    "  [keep — below level, refilling]".cyan().to_string()
+                LineKind::Hold if line.need > 0 => {
+                    "  [hold — below level, refilling]".cyan().to_string()
                 }
-                LineKind::Keep => "  [keep — at level]".dimmed().to_string(),
+                LineKind::Hold => "  [hold — at level]".dimmed().to_string(),
                 LineKind::Sinking if line.give < line.need => {
                     "  <-- short".red().bold().to_string()
                 }
@@ -514,8 +514,8 @@ pub async fn assess_with(
                         (bill.amount_cents - contributed).max(0),
                     )
                 }
-                Frequency::Keep => (
-                    LineKind::Keep,
+                Frequency::Hold => (
+                    LineKind::Hold,
                     bill.amount_cents,
                     (bill.amount_cents - current).max(0),
                 ),
@@ -647,10 +647,10 @@ mod tests {
     }
 
     #[test]
-    fn rebalance_never_touches_keep_pods() {
+    fn rebalance_never_touches_hold_pods() {
         let plan = rebalance_plan(&report_with(vec![
-            line("stash", 5_500, 5_000, LineKind::Keep), // above level — NOT skimmed
-            line("spent", 1_000, 5_000, LineKind::Keep), // below level — funding refills it, not rebalance
+            line("stash", 5_500, 5_000, LineKind::Hold), // above level — NOT skimmed
+            line("spent", 1_000, 5_000, LineKind::Hold), // below level — funding refills it, not rebalance
         ]));
         assert!(plan.skims.is_empty() && plan.fills.is_empty());
     }
