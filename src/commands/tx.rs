@@ -41,17 +41,17 @@ pub async fn run(
             }
         };
         for t in &tx {
-            let arrow = match t.direction {
-                TransferDirection::MoneyIn => "IN  ←",
-                TransferDirection::MoneyOut => "OUT →",
-                TransferDirection::Internal => "in  ←",
+            // An INTERNAL transfer is outbound when THIS pod is its source — show
+            // the real direction and the other party, not always "in ← <self>".
+            let outbound_internal = t.direction == TransferDirection::Internal
+                && t.source.as_ref().and_then(|s| s.id.as_deref()) == Some(a.id.as_str());
+            let (arrow, other) = match (t.direction, outbound_internal) {
+                (TransferDirection::MoneyIn, _) => ("IN  ←", t.source.as_ref()),
+                (TransferDirection::MoneyOut, _) => ("OUT →", t.destination.as_ref()),
+                (TransferDirection::Internal, true) => ("out →", t.destination.as_ref()),
+                (TransferDirection::Internal, false) => ("in  ←", t.source.as_ref()),
             };
-            let other = match t.direction {
-                TransferDirection::MoneyOut => t.destination.as_ref(),
-                _ => t.source.as_ref(),
-            }
-            .map(|p| p.name.as_str())
-            .unwrap_or("—");
+            let other = other.map(|p| p.name.as_str()).unwrap_or("—");
             println!(
                 "  {}  {arrow} {:>9}  {}",
                 t.created_at.get(..10).unwrap_or(""),
