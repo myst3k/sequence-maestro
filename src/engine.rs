@@ -329,10 +329,71 @@ pub struct SimInput {
     pub deposit_cents: i64,
 }
 
+impl SimInput {
+    /// True when any override is set. A simulation skips the pending-debit
+    /// reservation (real outflow history against a pretend date produces phantom
+    /// holds) and the config-drift checks (noise inside a what-if) — it answers
+    /// one question: given balances now and this deposit, what does the allocator do?
+    fn is_sim(&self) -> bool {
+        self.today.is_some() || self.deposit_cents != 0
+    }
+}
+
 /// Read-only assessment: balances, targets, plan, lines — nothing moved. `run` and
 /// `rebalance` share it, so they see identical numbers.
 pub async fn assess(cfg: &Config) -> Result<Report, Box<dyn std::error::Error + Send + Sync>> {
     assess_with(cfg, SimInput::default()).await
+}
+
+/// Pending-debit reservation: a due-day bill's scheduled debit doesn't land
+/// exactly on the due date — it can slip a few days late (slow ACH/weekend) or
+/// pull several days early (some autopays debit ~5 days ahead). If this cycle's
+/// debit hasn't gone out yet, the pod still holds that money but it's committed —
+/// reserve it so funding/rebalance don't mistake the pod for "full". Only bills
+/// near their due date get the extra outflow fetch, so it stays cheap.
+async fn pending_debit_reservations(
+    client: &Sequence,
+    assembled: &crate::budget::Assembled,
+    balances: &HashMap<String, i64>,
+    today: NaiveDate,
+    sched: &crate::schedule::PaySchedule,
+) -> HashMap<String, i64> {
+    const DANGER_DAYS: i64 = 7;
+    // Look back this far from the due date for the debit, to catch autopays that
+    // pull before the due date. Kept well under a cycle so the prior month's debit
+    // isn't counted as this one's.
+    const DEBIT_LEAD_DAYS: i64 = 12;
+    let at_risk: Vec<_> = assembled
+        .budget
+        .categories
+        .iter()
+        .flat_map(|c| &c.bills)
+        .filter_map(|b| {
+            let due = b.due_day?;
+            let d_last = crate::schedule::most_recent_due(due, today);
+            ((today - d_last).num_days() <= DANGER_DAYS).then_some((b, d_last))
+        })
+        .collect();
+    // Fetch outflows one pod at a time: the at-risk set is small, and a concurrent
+    // burst trips API rate limits — which, as fetch failures, would skip reservations
+    // unpredictably (run-to-run flip-flop). Serial keeps the result reliable.
+    let mut reserved: HashMap<String, i64> = HashMap::new();
+    for (b, d_last) in &at_risk {
+        let from = format!("{}T00:00:00Z", *d_last - Duration::days(DEBIT_LEAD_DAYS));
+        // A failed fetch means we don't know — don't reserve, lest a transient
+        // API error read as a missing debit. Cap at the real balance: a pod can only
+        // have committed what it actually holds (else need double-counts the bill).
+        let Ok(seen) = crate::fetch::outflow_since_cents(client, &b.pod_id, &from).await else {
+            continue;
+        };
+        let current = balances.get(&b.pod_id).copied().unwrap_or(0);
+        let target = bill_target(b, today, sched);
+        let unc = crate::cards::reserved_cents(b.amount_cents, seen, current, target);
+        if unc > 0 {
+            reserved.insert(b.pod_id.clone(), unc);
+        }
+    }
+    reserved
 }
 
 /// `assess` with optional simulation overrides (date + injected deposit). With a
@@ -368,12 +429,14 @@ pub async fn assess_with(
     // (Every class of drift here has caused a real bounce.) A failed rules read
     // degrades to a warning; funding still runs on the declared model.
     let mut warnings = assembled.warnings.clone();
-    match crate::fetch::rules_detailed(&client).await {
-        Ok(rules) => {
-            let flows = crate::budget::flows_from_rules(&rules);
-            warnings.extend(crate::budget::drift_warnings(&accounts, &flows));
+    if !sim.is_sim() {
+        match crate::fetch::rules_detailed(&client).await {
+            Ok(rules) => {
+                let flows = crate::budget::flows_from_rules(&rules);
+                warnings.extend(crate::budget::drift_warnings(&accounts, &flows));
+            }
+            Err(e) => warnings.push(format!("rules unreadable — config drift not checked ({e})")),
         }
-        Err(e) => warnings.push(format!("rules unreadable — config drift not checked ({e})")),
     }
 
     // Drawdown notes: how far behind pace each drawdown pod is — never auto-catches-up
@@ -439,47 +502,12 @@ pub async fn assess_with(
             .or_insert(0) += sim.deposit_cents;
     }
 
-    // Pending-debit reservation: a due-day bill's scheduled debit doesn't land
-    // exactly on the due date — it can slip a few days late (slow ACH/weekend) or
-    // pull several days early (some autopays debit ~5 days ahead). If this cycle's
-    // debit hasn't gone out yet, the pod still holds that money but it's committed —
-    // reserve it so funding/rebalance don't mistake the pod for "full". Only bills
-    // near their due date get the extra outflow fetch, so it stays cheap.
-    const DANGER_DAYS: i64 = 7;
-    // Look back this far from the due date for the debit, to catch autopays that
-    // pull before the due date. Kept well under a cycle so the prior month's debit
-    // isn't counted as this one's.
-    const DEBIT_LEAD_DAYS: i64 = 12;
-    let at_risk: Vec<_> = assembled
-        .budget
-        .categories
-        .iter()
-        .flat_map(|c| &c.bills)
-        .filter_map(|b| {
-            let due = b.due_day?;
-            let d_last = crate::schedule::most_recent_due(due, today);
-            ((today - d_last).num_days() <= DANGER_DAYS).then_some((b, d_last))
-        })
-        .collect();
-    // Fetch outflows one pod at a time: the at-risk set is small, and a concurrent
-    // burst trips API rate limits — which, as fetch failures, would skip reservations
-    // unpredictably (run-to-run flip-flop). Serial keeps the result reliable.
-    let mut reserved: HashMap<String, i64> = HashMap::new();
-    for (b, d_last) in &at_risk {
-        let from = format!("{}T00:00:00Z", *d_last - Duration::days(DEBIT_LEAD_DAYS));
-        // A failed fetch means we don't know — don't reserve, lest a transient
-        // API error read as a missing debit. Cap at the real balance: a pod can only
-        // have committed what it actually holds (else need double-counts the bill).
-        let Ok(seen) = crate::fetch::outflow_since_cents(&client, &b.pod_id, &from).await else {
-            continue;
-        };
-        let current = balances.get(&b.pod_id).copied().unwrap_or(0);
-        let target = bill_target(b, today, &sched);
-        let unc = crate::cards::reserved_cents(b.amount_cents, seen, current, target);
-        if unc > 0 {
-            reserved.insert(b.pod_id.clone(), unc);
-        }
-    }
+    // A simulation skips the reservation — see `SimInput::is_sim`.
+    let reserved = if sim.is_sim() {
+        HashMap::new()
+    } else {
+        pending_debit_reservations(&client, &assembled, &balances, today, &sched).await
+    };
 
     // funding map: real balances, contribution pods swapped to their ledger value,
     // and any uncleared scheduled debit reserved out (so the plan funds to cover it).
